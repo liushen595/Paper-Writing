@@ -1,0 +1,5 @@
+Protego==0.6.2
+Pygments==2.20.0
+mdurl==0.1.2
+pip-chill==1.0.5
+scrapling==0.4.9
