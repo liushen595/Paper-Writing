@@ -34,7 +34,7 @@ SYSTEM_PROMPT = """你是一名犯罪意图数据合成专家。你的任务是�
 3. thought_process 是显式推理链，用 "[推理] A -> B -> C -> 结论" 的格式，逐步从语境推断意图。
 4. label 取 "Threat" 或 "Safe"；probability 取 0.0-1.0；category 从给定列表选取或自拟。
 
-只输出一个 JSON 对象，不要任何额外解释。"""
+只输出一个 JSON 对象，不要任何额外解释，不要 markdown 代码块。"""
 
 
 USER_TEMPLATE = """DOJ 案情要素:
@@ -86,14 +86,19 @@ def _parse_synthesis(raw: str, record: DOJRecord) -> Optional[dict]:
     return obj
 
 
-def synthesize_one(client: BaseClient, record: DOJRecord, temperature: float = 0.8) -> Optional[dict]:
+def synthesize_one(client: BaseClient, record: DOJRecord, temperature: float = 0.7, retries: int = 2) -> Optional[dict]:
     msgs = _build_messages(record)
-    try:
-        raw = client.chat(msgs, temperature=temperature, max_tokens=512)
-    except Exception as e:  # noqa: BLE001
-        log.error(f"Teacher 调用失败: {e}; url={record.url}")
-        return None
-    return _parse_synthesis(raw, record)
+    for attempt in range(retries):
+        try:
+            raw = client.chat(msgs, temperature=temperature, max_tokens=1024)
+        except Exception as e:  # noqa: BLE001
+            log.error(f"Teacher 调用失败: {e}; url={record.url}")
+            return None
+        result = _parse_synthesis(raw, record)
+        if result is not None:
+            return result
+        log.warning(f"解析失败(尝试 {attempt+1}/{retries}), url={record.url}")
+    return None
 
 
 def run_synthesis(
@@ -120,15 +125,18 @@ def run_synthesis(
     log.info(f"使用 Teacher provider={client.provider.name}, model={client.model}")
 
     results: list[dict] = []
+    total_ok = 0
     for i, rec in enumerate(records):
         synth = synthesize_one(client, rec)
         if synth is not None:
             results.append(synth)
         if (i + 1) % 50 == 0:
-            log.info(f"进度 {i+1}/{len(records)}, 已成功 {len(results)}")
+            total_ok += len(results)
+            log.info(f"进度 {i+1}/{len(records)}, 已成功 {total_ok}")
             _flush(results, train_path, test_path, data_cfg.train_ratio, data_cfg.seed, partial=True)
+    total_ok += len(results)
     _flush(results, train_path, test_path, data_cfg.train_ratio, data_cfg.seed, partial=False)
-    log.info(f"合成完成: 共 {len(results)} 条 -> {train_path}(train) + {test_path}(test)")
+    log.info(f"合成完成: 共 {total_ok} 条 -> {train_path}(train) + {test_path}(test)")
 
 
 def _flush(results: list[dict], train_path: Path, test_path: Path, train_ratio: float, seed: int, partial: bool) -> None:

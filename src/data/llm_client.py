@@ -98,8 +98,14 @@ def build_client(provider_name: Optional[str] = None, env: Optional[EnvConfig] =
 
 
 def safe_json_extract(text: str) -> Any:
-    """从 LLM 输出中抽取首个 JSON 对象/数组。"""
+    """从 LLM 输出中抽取首个 JSON 对象/数组，自动剥离 markdown 代码块。"""
     text = text.strip()
+    # 剥离 ```json ... ``` 或 ``` ... ``` 包裹
+    if text.startswith("```"):
+        first_nl = text.find("\n")
+        last_fence = text.rfind("```")
+        if first_nl != -1 and last_fence > first_nl:
+            text = text[first_nl + 1 : last_fence].strip()
     for start, end in (("{", "}"), ("[", "]")):
         s = text.find(start)
         e = text.rfind(end)
