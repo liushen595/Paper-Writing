@@ -56,7 +56,7 @@ Output the following JSON (no markdown code blocks, all content in English):
 
 def _build_messages(record: DOJRecord) -> list[ChatMessage]:
     elem = extract_case_elements(record)
-    body_excerpt = record.body[:800] if record.body else record.summary
+    body_excerpt = record.body[:500] if record.body else record.summary
     return [
         ChatMessage("system", SYSTEM_PROMPT),
         ChatMessage("user", USER_TEMPLATE.format(
@@ -93,7 +93,7 @@ def synthesize_one(client: BaseClient, record: DOJRecord, temperature: float = 0
     msgs = _build_messages(record)
     for attempt in range(retries):
         try:
-            raw = client.chat(msgs, temperature=temperature, max_tokens=1024)
+            raw = client.chat(msgs, temperature=temperature, max_tokens=2048)
         except Exception as e:  # noqa: BLE001
             log.error(f"Teacher 调用失败: {e}; url={record.url}")
             return None
