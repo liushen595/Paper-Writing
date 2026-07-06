@@ -54,3 +54,58 @@
 - `conda install pytest` 后跑单测验证逻辑层。
 - 小规模造数（`--limit 50`）验证 Teacher LLM prompt 与解析链路。
 - 之后按 `scripts/run_all.sh` 各阶段顺序推进。
+
+---
+
+## 2026-07-06 17:52 — 勘误修复、断点续训、合成验证
+
+### 本次代码更改做了什么
+
+1. **勘误：API Provider 修正**
+   - `src/utils/env.py`：`gemini` -> `agnes`，`LLMProviderConfig` 新增 `model_name` 字段，从 `.env` 的 `*_MODEL_NAME` 环境变量读取，代码不硬编码模型名。
+   - `src/data/llm_client.py`：移除 `GeminiClient` 类与 `_PROVIDER_REGISTRY` 硬编码映射，统一用 `OpenAICompatibleClient`；`build_client` 使用 `provider.model_name`。
+   - `.env.example`/.env：保留 `GLM_MODEL_NAME`/`AGNES_MODEL_NAME`/`OPENAI_MODEL_NAME`，用户在 `.env` 中配置实际模型名。
+   - `configs/default.yaml`：`judge_provider` 改为 `agnes`。
+   - `scripts/run_synthesis.py`：help 文本 gemini -> agnes。
+
+2. **勘误：移除 `doj_non_criminal.jsonl` 相关逻辑**
+   - `src/utils/config.py`：移除 `raw_non_criminal` 字段。
+   - `src/data/hard_negatives.py`：移除 `from_non_criminal()` 函数，仅保留 `llm_augment()` 与 `merge_hard_negatives()`。
+   - `src/data/blind_set.py`：移除 `doj_non_criminal` haystack 来源，仅保留 `hard_negatives` + 可选额外泛语料。
+   - `configs/default.yaml`：移除 `raw_non_criminal` 配置。
+
+3. **断点续训（总轮数设计）**
+   - `src/training/sft.py`：`_find_latest_checkpoint(ckpt_dir)` 查找 `checkpoint-XXXX`，`start_epoch` 从最新 checkpoint 恢复，`num_epochs` 为总轮数，跳过已完成 epoch。每个 epoch 结束保存 `checkpoint-{epoch+1}`。
+   - `src/training/dpo.py`：`_find_latest_checkpoint` + `trainer.train(resume_from_checkpoint=...)`。
+   - `src/training/implicit_cot.py`：额外保存 `train_state.json`（`epoch`, `removed_so_far`）恢复 Stepwise Internalization 的 removal state，`_find_latest_checkpoint` + 从 `removed_so_far` 继续调度。
+
+4. **适配 RTX 4060 8GB**
+   - `configs/default.yaml`：`per_device_batch_size=1`, `gradient_accumulation_steps=16`, `max_seq_len=512`, `lora_r=16`。注释标注服务器推荐值。
+
+5. **Logging Bug 修复**
+   - `src/utils/logging.py`：`_CONFIGURED` 全局标志导致不同 name 的 logger 不添加 handler，日志静默丢失。改为 `_LOGGERS` dict 按 name 管理，每个 logger 独立配置 handler。
+
+6. **Synthesis 修复与验证**
+   - `src/data/synthesis.py`：`max_tokens` 512->1024；`synthesize_one` 添加 `retries=2` 重试机制；SYSTEM_PROMPT 加"不要 markdown 代码块"。
+   - `src/data/llm_client.py`：`safe_json_extract` 支持剥离 ```` ```json...``` ```` 包裹。
+   - **验证结果**：`agnes-2.0-flash` 成功生成 2 条训练数据（Cyber + Narcotics），JSON 解析正常，train/test 80/20 切分正确。
+
+7. **Pytest 全部通过**
+   - `tests/test_logic.py`：12 个纯逻辑单测全部通过（metrics / removal schedule / label conversion / ToXCL score / judge agreement / safe_json_extract / doj_loader / env loading / config roundtrip）。
+
+### 开发中遇到的问题与解决方案
+- **问题：`run_synthesis.py` 日志静默丢失，合成完成但日志不输出进度。**
+  - 原因：`setup_logger` 的 `_CONFIGURED` 全局标志在首次配置后设为 True，后续不同 name 的 logger 不添加 StreamHandler。
+  - 解决：改为 `_LOGGERS` dict 按 name 管理，每个 logger 独立添加 handler。
+- **问题：Agnes API 返回的 JSON 被 markdown 代码块包裹或被截断。**
+  - 解决：`safe_json_extract` 剥离 ```` ```json...``` ````；`max_tokens` 提升到 1024；`synthesize_one` 添加重试。
+- **问题：`_flush` 清空 results 后 `log.info` 报告 0 条。**
+  - 解决：`total_ok` 在 `_flush` 前累加，独立于 results 列表。
+
+### 测试结果
+- Pytest: 12/12 passed (0.94s)。
+- 小规模合成: 3 条 DOJ -> 2 条成功（1 条 train + 1 条 test），Agnes API 响应 8-11s/条。
+
+### 硬件说明
+- 当前开发机 RTX 4060 Laptop 8GB，QLoRA 8B 模型仅 ~4-5GB 显存 + 梯度/LoRA 开销，完整训练（SFT/DPO/Stepwise）可能溢出。
+- 完整训练需租用服务器（建议 RTX 4090 24GB 或 A6000 48GB）。
