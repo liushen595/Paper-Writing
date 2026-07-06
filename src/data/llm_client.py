@@ -1,7 +1,8 @@
-"""统一的 Teacher LLM 客户端封装：支持 GLM / Gemini / OpenAI 兼容接口。
+"""统一的 Teacher LLM 客户端封装：支持 OpenAI 兼容接口（GLM / Agnes 等）。
 
 所有 provider 均暴露 chat(messages, **gen_kwargs) -> str 接口，
 造数 / 偏好对 / Judge 复用同一套客户端。失败自动降级到下一个可用 provider。
+模型名从 .env 环境变量读取，不硬编码在代码中。
 """
 from __future__ import annotations
 
@@ -32,9 +33,9 @@ class BaseClient:
 
     name: str = "base"
 
-    def __init__(self, provider: LLMProviderConfig, model: str, timeout: int = 120):
+    def __init__(self, provider: LLMProviderConfig, timeout: int = 120):
         self.provider = provider
-        self.model = model
+        self.model = provider.model_name  # 从 .env 读取，不硬编码
         self.timeout = timeout
 
     def chat(self, messages: list[ChatMessage], temperature: float = 0.7, max_tokens: int = 1024, **kw) -> str:
@@ -42,7 +43,7 @@ class BaseClient:
 
 
 class OpenAICompatibleClient(BaseClient):
-    """OpenAI 兼容 chat/completions 接口（GLM、OpenAI 中转均走此）。"""
+    """OpenAI 兼容 chat/completions 接口（GLM、Agnes、OpenAI 中转均走此）。"""
 
     name = "openai_compat"
 
@@ -57,31 +58,6 @@ class OpenAICompatibleClient(BaseClient):
         }
         headers = {"Authorization": f"Bearer {self.provider.api_key}", "Content-Type": "application/json"}
         return _retry_request(url, payload, headers, self.timeout)
-
-
-class GeminiClient(BaseClient):
-    """Google Gemini generateContent 接口。"""
-
-    name = "gemini"
-
-    def chat(self, messages: list[ChatMessage], temperature: float = 0.7, max_tokens: int = 1024, **kw) -> str:
-        # Gemini 把 system 作为 systemInstruction，user/model 进 contents
-        system_msgs = [m for m in messages if m.role == "system"]
-        contents = [
-            {"role": m.role if m.role in ("user", "model") else "user", "parts": [{"text": m.content}]}
-            for m in messages if m.role != "system"
-        ]
-        body: dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens, **kw},
-        }
-        if system_msgs:
-            body["systemInstruction"] = {"parts": [{"text": " ".join(m.content for m in system_msgs)}]}
-        url = f"{self.provider.base_url.rstrip('/')}/models/{self.model}:generateContent?key={self.provider.api_key}"
-        resp = requests.post(url, json=body, timeout=self.timeout)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 def _retry_request(url: str, payload: dict, headers: dict, timeout: int, retries: int = 3, backoff: float = 2.0) -> str:
@@ -100,16 +76,11 @@ def _retry_request(url: str, payload: dict, headers: dict, timeout: int, retries
     raise RuntimeError(f"LLM 请求重试 {retries} 次仍失败: {last_err}")
 
 
-# --- provider -> (client_class, default_model) 映射 ---
-_PROVIDER_REGISTRY = {
-    "glm": (OpenAICompatibleClient, "glm-4-flash"),
-    "openai": (OpenAICompatibleClient, "gpt-4o-mini"),
-    "gemini": (GeminiClient, "gemini-2.0-flash"),
-}
-
-
 def build_client(provider_name: Optional[str] = None, env: Optional[EnvConfig] = None, model: Optional[str] = None) -> BaseClient:
-    """根据 .env 中已启用的 provider 构造客户端。指定 provider_name 则用之，否则取首个可用。"""
+    """根据 .env 中已启用的 provider 构造客户端。指定 provider_name 则用之，否则取首个可用。
+    
+    模型名优先级：参数 model > .env 中对应 provider 的 *_MODEL_NAME。
+    """
     env = env or load_env_config()
     available = env.available_providers()
     if not available:
@@ -121,8 +92,9 @@ def build_client(provider_name: Optional[str] = None, env: Optional[EnvConfig] =
         chosen = providers[0]
     else:
         chosen = available[0]
-    cls, default_model = _PROVIDER_REGISTRY[chosen.name]
-    return cls(chosen, model=model or default_model)
+    if model:
+        chosen.model_name = model
+    return OpenAICompatibleClient(chosen)
 
 
 def safe_json_extract(text: str) -> Any:

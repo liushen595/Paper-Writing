@@ -26,6 +26,7 @@ class LLMProviderConfig:
     name: str
     api_key: str
     base_url: str
+    model_name: str  # 从 .env 读取，不硬编码
 
     @property
     def enabled(self) -> bool:
@@ -35,7 +36,7 @@ class LLMProviderConfig:
 @dataclass
 class EnvConfig:
     glm: LLMProviderConfig
-    gemini: LLMProviderConfig
+    agnes: LLMProviderConfig
     openai: LLMProviderConfig
     hf_token: Optional[str]
     wandb_api_key: Optional[str]
@@ -44,7 +45,7 @@ class EnvConfig:
     raw_dir: Path
 
     def available_providers(self) -> list[LLMProviderConfig]:
-        return [p for p in (self.glm, self.gemini, self.openai) if p.enabled]
+        return [p for p in (self.glm, self.agnes, self.openai) if p.enabled]
 
 
 def load_env_config() -> EnvConfig:
@@ -56,16 +57,19 @@ def load_env_config() -> EnvConfig:
             name="glm",
             api_key=os.environ.get("GLM_API_KEY", "").strip(),
             base_url=os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/").strip(),
+            model_name=os.environ.get("GLM_MODEL_NAME", "glm-4-flash").strip(),
         ),
-        gemini=LLMProviderConfig(
-            name="gemini",
-            api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
-            base_url=os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/").strip(),
+        agnes=LLMProviderConfig(
+            name="agnes",
+            api_key=os.environ.get("AGNES_API_KEY", "").strip(),
+            base_url=os.environ.get("AGNES_BASE_URL", "").strip(),
+            model_name=os.environ.get("AGNES_MODEL_NAME", "agnes-2.0-flash").strip(),
         ),
         openai=LLMProviderConfig(
             name="openai",
             api_key=os.environ.get("OPENAI_API_KEY", "").strip(),
             base_url=os.environ.get("OPENAI_BASE_URL", "").strip(),
+            model_name=os.environ.get("OPENAI_MODEL_NAME", "gpt-4o-mini").strip(),
         ),
         hf_token=(os.environ.get("HF_TOKEN") or None),
         wandb_api_key=(os.environ.get("WANDB_API_KEY") or None),

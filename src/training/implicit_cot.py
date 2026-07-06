@@ -1,21 +1,17 @@
 """Phase 3 Stepwise Internalization（Deng et al. 2024）。
 
+支持断点续训：checkpoint 按 epoch 编号，resume 时恢复 removal state。
+num_epochs 为总轮数。
+
 核心：从显式 CoT 模型出发，按线性调度逐步移除 CoT token 并微调。
 稳定性三件套：Removal Smoothing (lambda=4)、优化器重置、左移除。
-
-实现策略（适配 Llama-3 chat template）：
-- 训练样本的 assistant 段为 "<thought>thought</thought>\n[Category: X]\nLabel"。
-- thought 段被视为可移除的 CoT token 序列。
-- 每移除一个 thought token：把该位置的 input_id 改为 pad/删除，label 置 -100，
-  使模型在更短前缀下直接预测剩余 thought + Label。
-- 移除数 s(t) = floor(delta * t / T)，加随机偏移 o ~ exp(-lambda*o)。
-- 每次移除数增加时重置 AdamW 状态。
 """
 from __future__ import annotations
 
+import json
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional
 
@@ -28,25 +24,15 @@ from ..models.student import StudentModel, load_tokenizer
 from ..utils.config import ExperimentConfig, ImplicitCoTConfig
 from ..utils.logging import get_logger, default_log_dir
 from ..utils.seed import set_seed
-from .sft_dataset import SFTCollator, SFTDataset, format_chat
+from .sft_dataset import SFTCollator, format_chat
 
 log = get_logger("implicit_cot")
 
 
-@dataclass
-class RemovalState:
-    """记录当前每个样本的可移除 thought 长度与已移除数。"""
-    thought_len: int
-    removed: int = 0
-
-
-def _locate_thought_span(full_ids: list[int], thought_str: str, tokenizer) -> tuple[int, int]:
-    """返回 thought 内容在 full_ids 中的 (start, end) 索引。"""
-    prefix = "<thought>"
-    suffix = "</thought>"
-    prefix_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
-    suffix_ids = tokenizer(suffix, add_special_tokens=False)["input_ids"]
-    # 简化：搜索 prefix_ids 出现位置
+def _locate_thought_span(full_ids: list[int], tokenizer) -> tuple[int, int]:
+    """返回 <thought>...</thought> 内容在 full_ids 中的 (start, end) 索引。"""
+    prefix_ids = tokenizer("<thought>", add_special_tokens=False)["input_ids"]
+    suffix_ids = tokenizer("</thought>", add_special_tokens=False)["input_ids"]
     start = _find_subseq(full_ids, prefix_ids)
     if start is None:
         return -1, -1
@@ -67,22 +53,20 @@ def _find_subseq(seq: list[int], sub: list[int]) -> Optional[int]:
 
 
 def removal_schedule(t: int, T: int, delta: int) -> int:
-    """线性调度 s(t) = floor(delta * t / T)。"""
     return min(delta, math.floor(delta * t / max(1, T)))
 
 
 def removal_smoothing_offset(lam: float) -> int:
-    """o ~ P(o) ∝ exp(-lambda * o)，非负整数。"""
     if lam == float("inf"):
         return 0
-    while True:
+    for _ in range(20):
         o = random.randint(0, 8)
         if random.random() < math.exp(-lam * o):
             return o
+    return 0
 
 
 def apply_removal(full_ids: list[int], labels_clm: list[int], thought_span: tuple[int, int], n_remove: int, left: bool = True) -> tuple[list[int], list[int]]:
-    """移除 n_remove 个 thought token（左移除：从 thought 起点移除）。返回新的 (input_ids, labels_clm)。"""
     start, end = thought_span
     if start < 0 or end <= start:
         return list(full_ids), list(labels_clm)
@@ -101,7 +85,6 @@ def apply_removal(full_ids: list[int], labels_clm: list[int], thought_span: tupl
 
 
 def reset_optimizer(opt: Optimizer) -> Optimizer:
-    """重置 AdamW 的状态（一阶/二阶矩）。"""
     for group in opt.param_groups:
         for p in group["params"]:
             state = opt.state.get(p, {})
@@ -111,10 +94,36 @@ def reset_optimizer(opt: Optimizer) -> Optimizer:
     return opt
 
 
+def _save_ckpt_state(out_dir: Path, epoch: int, removed_so_far: int):
+    state = {"epoch": epoch, "removed_so_far": removed_so_far}
+    with open(out_dir / "train_state.json", "w") as f:
+        json.dump(state, f)
+
+
+def _load_ckpt_state(out_dir: Path) -> tuple[int, int]:
+    p = out_dir / "train_state.json"
+    if p.exists():
+        with open(p, "r") as f:
+            state = json.load(f)
+        return state.get("epoch", 0), state.get("removed_so_far", 0)
+    return 0, 0
+
+
+def _find_latest_checkpoint(ckpt_dir: Path) -> tuple[Optional[Path], int]:
+    if not ckpt_dir.exists():
+        return None, 0
+    ckpts = sorted(ckpt_dir.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
+    if not ckpts:
+        return None, 0
+    latest = ckpts[-1]
+    completed_epochs = int(latest.name.split("-")[-1])
+    return latest, completed_epochs
+
+
 def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig] = None) -> Path:
     ic_cfg = ic_cfg or cfg.implicit_cot
     set_seed(cfg.seed)
-    log.info(f"=== Phase 3 Stepwise Internalization | delta={ic_cfg.delta_per_epoch} lambda={ic_cfg.lambda_smoothing} ===")
+    log.info(f"=== Phase 3 Stepwise Internalization | delta={ic_cfg.delta_per_epoch} lambda={ic_cfg.lambda_smoothing} | epochs={ic_cfg.num_epochs} ===")
 
     tokenizer = load_tokenizer(cfg.sft.base_model)
     examples = build_train_examples(cfg.data, split="train")
@@ -122,36 +131,49 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
         raise RuntimeError("无训练样本，请先运行 synthesis")
 
     # 预计算每个样本的 thought span
-    spans: list[tuple[int, int]] = []
     base_cache: list[dict] = []
+    spans: list[tuple[int, int]] = []
     for ex in examples:
         full, _ = format_chat(ex, tokenizer)
         full_ids = tokenizer(full, truncation=True, max_length=ic_cfg.max_seq_len, add_special_tokens=False)["input_ids"]
         labels_clm = list(full_ids)
-        # 简化：prompt 段（含 <thought> 之前）置 -100；这里复用 SFTDataset 逻辑的话需要 prompt_ids
-        span = _locate_thought_span(full_ids, ex.thought_process, tokenizer)
+        span = _locate_thought_span(full_ids, tokenizer)
         spans.append(span)
         base_cache.append({"input_ids": full_ids, "labels_clm": labels_clm, "labels_cls": 1 if ex.label == "Threat" else 0})
 
-    model = StudentModel.load(cfg.sft, ic_cfg.sft_ckpt)
+    out_dir = Path(ic_cfg.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 断点续训
+    latest_ckpt, start_epoch = _find_latest_checkpoint(out_dir)
+    removed_so_far = 0
+    if latest_ckpt:
+        _, removed_so_far = _load_ckpt_state(latest_ckpt)
+        log.info(f"发现 checkpoint: {latest_ckpt}, 从 epoch {start_epoch} 继续, 已移除 {removed_so_far} tokens（总轮数 {ic_cfg.num_epochs}）")
+        model = StudentModel.load(cfg.sft, latest_ckpt)
+    else:
+        log.info("无已有 checkpoint，从头训练")
+        model = StudentModel.load(cfg.sft, ic_cfg.sft_ckpt)
+
+    if start_epoch >= ic_cfg.num_epochs:
+        log.info(f"已完成 {start_epoch} 轮 >= 目标 {ic_cfg.num_epochs} 轮，跳过训练")
+        return out_dir
+
     model.train()
     device = next(model.parameters()).device
     optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=ic_cfg.learning_rate)
 
-    out_dir = Path(ic_cfg.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     collator = SFTCollator(tokenizer, max_seq_len=ic_cfg.max_seq_len)
-    T = len(base_cache) * ic_cfg.num_epochs  # 总步数近似
-    global_step = 0
-    prev_s = 0
-    for epoch in range(ic_cfg.num_epochs):
+    T = len(base_cache) * ic_cfg.num_epochs
+    global_step = start_epoch * len(base_cache)
+    prev_s = removed_so_far
+
+    for epoch in range(start_epoch, ic_cfg.num_epochs):
         epoch_indices = list(range(len(base_cache)))
         random.shuffle(epoch_indices)
         for idx in epoch_indices:
             t = global_step
-            s = removal_schedule(t, T, ic_cfg.delta_per_epoch)
-            if ic_cfg.left_removal:
-                s += removal_smoothing_offset(ic_cfg.lambda_smoothing)
+            s = removal_schedule(t, T, ic_cfg.delta_per_epoch) + removal_smoothing_offset(ic_cfg.lambda_smoothing)
             if s > prev_s and ic_cfg.reset_optimizer_on_removal:
                 optimizer = reset_optimizer(optimizer)
                 log.info(f"step={t} 移除数 {prev_s}->{s}, 优化器已重置")
@@ -173,7 +195,13 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
             global_step += 1
             if global_step % 50 == 0:
                 log.info(f"epoch={epoch} step={global_step} s={s} loss={loss.item():.4f}")
-        log.info(f"epoch {epoch} 完成, 当前移除数 s={prev_s}")
+
+        # 每个 epoch 结束保存 checkpoint
+        ckpt_path = out_dir / f"checkpoint-{epoch + 1}"
+        model.save(ckpt_path)
+        _save_ckpt_state(ckpt_path, epoch + 1, prev_s)
+        log.info(f"epoch {epoch} 完成, checkpoint 保存到 {ckpt_path}, 当前移除数 s={prev_s}")
+
     model.save(out_dir)
     log.info(f"Stepwise Internalization 完成, 模型保存到 {out_dir}")
     return out_dir

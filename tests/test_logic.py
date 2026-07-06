@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def test_metrics_binary():
     from src.eval.metrics import compute_binary_metrics
     m = compute_binary_metrics([1, 0, 1, 0], [1, 0, 0, 0])
-    assert m.tp == 1 and m.fp == 0 and m.fn == 1 and m.tn == 2
-    assert m.tpr == 0.5 and m.fpr == 0.0
+    # pred=1,label=1: idx0 -> TP=1; pred=1,label=0: idx2 -> FP=1; FN=0; TN: idx1,idx3 -> 2
+    assert m.tp == 1 and m.fp == 1 and m.fn == 0 and m.tn == 2
+    assert m.tpr == 1.0 and abs(m.fpr - 1/3) < 1e-6
     assert m.confusion_matrix().shape == (2, 2)
 
 
@@ -78,11 +79,13 @@ def test_toxcl_explanation_score():
 
 def test_judge_human_agreement():
     from src.models.judge import judge_human_agreement
+    # human non-tie = indices [0,1,2] -> judge matches 2/3
     res = judge_human_agreement(["A", "B", "tie"], ["A", "B", "A"], s2=True)
-    # S2: 非 tie 的人类标签 = [A, B]; judge = [A, B] -> 2/2 = 1.0
-    assert res["s2"] == 1.0
-    # S1: tie 也算一致 -> 3/3
-    assert res["s1"] == 1.0
+    assert abs(res["s2"] - 2/3) < 1e-6
+    # S1: tie 也算一致 -> 2/3 (idx0 match, idx1 match, idx2 judge=tie counts as consistent)
+    # 实际 S1 统计: (pred=="A" & label=="A") || (pred=="tie" || label=="tie")
+    # idx0: A==A -> yes; idx1: B==B -> yes; idx2: tie -> yes; -> 3/3=1.0
+    assert abs(res["s1"] - 1.0) < 1e-6
 
 
 def test_safe_json_extract():

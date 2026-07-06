@@ -2,8 +2,7 @@
 
 数据来源：
 1. synthesis.py 已为每个隐式正样本配对一条 hard_negative（语境安全）。
-2. 本模块从 crawler/output/doj_non_criminal.jsonl 抽取安全背景语料。
-3. 可选调用 Teacher LLM 对边界模糊的安全言论做"近犯罪"重写，构造更难的硬负样本。
+2. 可选调用 Teacher LLM 对边界模糊的安全言论做"近犯罪"重写，构造更难的硬负样本。
 """
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ from typing import Optional
 from ..utils.config import DataConfig
 from ..utils.env import PROJECT_ROOT
 from ..utils.logging import get_logger
-from .doj_loader import DOJRecord, load_doj_records
 from .llm_client import ChatMessage, BaseClient, build_client, safe_json_extract
 
 log = get_logger("hard_negatives")
@@ -29,27 +27,6 @@ USER_TEMPLATE = """犯罪主题: {category}
 
 输出 JSON:
 {{"text": "<安全言论>", "context": "<安全语境类型>", "label": "Safe"}}"""
-
-
-def from_non_criminal(data_cfg: DataConfig, limit: Optional[int] = None) -> list[dict]:
-    """从 doj_non_criminal.jsonl 提取非犯罪背景作为安全样本。"""
-    path = (PROJECT_ROOT / data_cfg.raw_non_criminal).resolve()
-    records = load_doj_records(path, limit=limit)
-    out: list[dict] = []
-    for r in records:
-        text = r.summary or r.title
-        if not text:
-            continue
-        out.append({
-            "text": text,
-            "thought_process": "[推理] 来自司法部非犯罪新闻稿 -> 民事/行政/政策事项 -> Safe。",
-            "label": "Safe",
-            "probability": 0.0,
-            "category": "NonCriminal",
-            "source_url": r.url,
-        })
-    log.info(f"从非犯罪新闻稿生成 {len(out)} 条安全样本")
-    return out
 
 
 def llm_augment(client: BaseClient, category: str, summary: str, n: int = 1) -> list[dict]:
@@ -76,11 +53,11 @@ def llm_augment(client: BaseClient, category: str, summary: str, n: int = 1) -> 
 
 
 def merge_hard_negatives(data_cfg: DataConfig, augmented_path: Optional[Path] = None) -> Path:
-    """合并所有硬负样本到一个文件，供 dataset.py 使用。"""
+    """合并所有硬负样本到一个文件（hard_negatives 来自 synthesis，可选 LLM 增强），供 dataset.py 使用。"""
     out_dir = (PROJECT_ROOT / data_cfg.synthesized_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "hard_negatives.jsonl"
-    samples = from_non_criminal(data_cfg)
+    samples: list[dict] = []
     if augmented_path and Path(augmented_path).exists():
         with open(augmented_path, "r", encoding="utf-8") as f:
             for line in f:

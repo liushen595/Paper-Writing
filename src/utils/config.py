@@ -14,7 +14,6 @@ from .env import PROJECT_ROOT
 @dataclass
 class DataConfig:
     raw_criminal: str = "crawler/output/doj_criminal.jsonl"
-    raw_non_criminal: str = "crawler/output/doj_non_criminal.jsonl"
     synthesized_dir: str = "data/synthesized"
     preference_dir: str = "data/preference"
     blind_dir: str = "data/blind"

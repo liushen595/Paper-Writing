@@ -1,6 +1,7 @@
 """Phase 1 SFT 训练循环：联合损失 alpha*L_cls + beta*L_clm。
 
-注：本文件仅定义训练函数；运行入口在 scripts/run_sft.py，本任务不执行训练。
+支持断点续训：checkpoint 按 epoch 编号保存，resume 时自动从最新 checkpoint 继续。
+num_epochs 为总轮数，resume 时跳过已完成的 epoch。
 """
 from __future__ import annotations
 
@@ -21,11 +22,23 @@ from .sft_dataset import SFTCollator, SFTDataset
 log = get_logger("sft_train")
 
 
+def _find_latest_checkpoint(ckpt_dir: Path) -> tuple[Optional[Path], int]:
+    """找到最新的 checkpoint-XXXX 目录，返回 (路径, 已完成 epoch 数)。"""
+    if not ckpt_dir.exists():
+        return None, 0
+    ckpts = sorted(ckpt_dir.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
+    if not ckpts:
+        return None, 0
+    latest = ckpts[-1]
+    completed_epochs = int(latest.name.split("-")[-1])
+    return latest, completed_epochs
+
+
 def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split: str = "train") -> Path:
     sft_cfg = sft_cfg or cfg.sft
     set_seed(cfg.seed)
     log_dir = default_log_dir()
-    log.info(f"=== Phase 1 SFT 开始 | base={sft_cfg.base_model} | seed={cfg.seed} ===")
+    log.info(f"=== Phase 1 SFT | base={sft_cfg.base_model} | seed={cfg.seed} | epochs={sft_cfg.num_epochs} ===")
 
     tokenizer = load_tokenizer(sft_cfg.base_model)
     examples = build_train_examples(cfg.data, split=split)
@@ -38,17 +51,32 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
         collate_fn=collator, num_workers=2, pin_memory=True,
     )
 
-    model = StudentModel(sft_cfg)
+    out_dir = Path(sft_cfg.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 断点续训：查找最新 checkpoint
+    latest_ckpt, start_epoch = _find_latest_checkpoint(out_dir)
+    if latest_ckpt:
+        log.info(f"发现 checkpoint: {latest_ckpt}，从 epoch {start_epoch} 继续训练（总轮数 {sft_cfg.num_epochs}）")
+        model = StudentModel.load(sft_cfg, latest_ckpt)
+    else:
+        log.info("无已有 checkpoint，从头训练")
+        model = StudentModel(sft_cfg)
+
+    if start_epoch >= sft_cfg.num_epochs:
+        log.info(f"已完成 {start_epoch} 轮 >= 目标 {sft_cfg.num_epochs} 轮，跳过训练")
+        return out_dir
+
     model.train()
     device = next(model.parameters()).device
     optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=sft_cfg.learning_rate)
 
-    total_steps = sft_cfg.num_epochs * len(loader)
+    steps_per_epoch = len(loader)
+    total_steps = sft_cfg.num_epochs * steps_per_epoch
     warmup = int(sft_cfg.warmup_ratio * total_steps)
-    out_dir = Path(sft_cfg.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    global_step = 0
-    for epoch in range(sft_cfg.num_epochs):
+    global_step = start_epoch * steps_per_epoch
+
+    for epoch in range(start_epoch, sft_cfg.num_epochs):
         for batch in loader:
             batch = {k: v.to(device) for k, v in batch.__dict__.items()}
             outputs = model(
@@ -69,7 +97,13 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
             if global_step % 20 == 0:
                 log.info(f"epoch={epoch} step={global_step}/{total_steps} loss={loss.item():.4f} "
                          f"cls={outputs['cls_loss'].item():.4f} clm={outputs['clm_loss'].item():.4f}")
-        log.info(f"epoch {epoch} 完成")
+
+        # 每个 epoch 结束保存 checkpoint
+        ckpt_path = out_dir / f"checkpoint-{epoch + 1}"
+        model.save(ckpt_path)
+        log.info(f"epoch {epoch} 完成, checkpoint 保存到 {ckpt_path}")
+
+    # 最终保存为 adapter_model 目录（兼容 PeftModel.from_pretrained）
     model.save(out_dir)
-    log.info(f"SFT 训练完成, 模型保存到 {out_dir}")
+    log.info(f"SFT 训练完成, 最终模型保存到 {out_dir}")
     return out_dir

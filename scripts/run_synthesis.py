@@ -19,7 +19,7 @@ from src.utils.logging import setup_logger, default_log_dir
 def main():
     ap = argparse.ArgumentParser(description="Phase 0: 用 Teacher LLM 合成隐式意图训练数据")
     ap.add_argument("--config", default="configs/default.yaml")
-    ap.add_argument("--provider", default=None, help="glm/gemini/openai; 留空取 .env 中首个可用")
+    ap.add_argument("--provider", default=None, help="glm/agnes/openai; 留空取 .env 中首个可用")
     ap.add_argument("--model", default=None, help="覆盖默认 teacher 模型名")
     ap.add_argument("--limit", type=int, default=None, help="只处理前 N 条 DOJ 记录（调试用）")
     ap.add_argument("--overwrite", action="store_true", help="覆盖已有 train/test.jsonl")

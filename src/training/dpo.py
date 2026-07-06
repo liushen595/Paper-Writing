@@ -1,6 +1,6 @@
 """Phase 2 DPO 训练：基于 trl.DPOTrainer + QLoRA。
 
-注：本文件仅定义训练函数；运行入口在 scripts/run_dpo.py，本任务不执行训练。
+支持断点续训：从最新 checkpoint 恢复。
 DPO beta 起始 0.1（来自 Wen et al. 2023 KL 系数经验甜点）。
 """
 from __future__ import annotations
@@ -15,6 +15,14 @@ from ..utils.logging import get_logger
 from ..utils.seed import set_seed
 
 log = get_logger("dpo_train")
+
+
+def _find_latest_checkpoint(ckpt_dir: Path) -> Optional[Path]:
+    """找到最新的 checkpoint-XXXX 目录。"""
+    if not ckpt_dir.exists():
+        return None
+    ckpts = sorted(ckpt_dir.glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[-1]))
+    return ckpts[-1] if ckpts else None
 
 
 def build_dpo_dataset(cfg: ExperimentConfig):
@@ -34,12 +42,12 @@ def build_dpo_dataset(cfg: ExperimentConfig):
 def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Path:
     dpo_cfg = dpo_cfg or cfg.dpo
     set_seed(cfg.seed)
-    log.info(f"=== Phase 2 DPO 开始 | beta={dpo_cfg.beta} | seed={cfg.seed} ===")
+    log.info(f"=== Phase 2 DPO | beta={dpo_cfg.beta} | seed={cfg.seed} | epochs={dpo_cfg.num_epochs} ===")
 
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     import torch
     from peft import LoraConfig
-    from trl import DPOConfig, DPOTrainer
+    from trl import DPOConfig as TRLDPOConfig, DPOTrainer
 
     bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(cfg.sft.base_model)
@@ -50,7 +58,6 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
     model = AutoModelForCausalLM.from_pretrained(
         cfg.sft.base_model, quantization_config=bnb, device_map="auto",
     )
-    # 加载 SFT LoRA 权重
     if (sft_ckpt / "adapter_config.json").exists():
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, str(sft_ckpt))
@@ -65,7 +72,10 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
     out_dir = Path(dpo_cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    trl_cfg = DPOConfig(
+    # 断点续训
+    resume_ckpt = _find_latest_checkpoint(out_dir)
+
+    trl_cfg = TRLDPOConfig(
         beta=dpo_cfg.beta,
         learning_rate=dpo_cfg.learning_rate,
         num_train_epochs=dpo_cfg.num_epochs,
@@ -83,7 +93,7 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
     trainer = DPOTrainer(
         model=model, args=trl_cfg, train_dataset=dataset, processing_class=tokenizer,
     )
-    trainer.train()
+    trainer.train(resume_from_checkpoint=str(resume_ckpt) if resume_ckpt else None)
     trainer.save_model(str(out_dir))
     log.info(f"DPO 训练完成, 模型保存到 {out_dir}")
     return out_dir
