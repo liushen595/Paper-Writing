@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -89,18 +90,24 @@ def _parse_synthesis(raw: str, record: DOJRecord) -> Optional[dict]:
     return obj
 
 
-def synthesize_one(client: BaseClient, record: DOJRecord, temperature: float = 0.7, retries: int = 2) -> Optional[dict]:
+def synthesize_one(client: BaseClient, record: DOJRecord, temperature: float = 0.7, max_retries: int = 8) -> Optional[dict]:
+    """合成单条数据。数据宝贵，最多重试 max_retries 次，每次失败后调整策略。"""
     msgs = _build_messages(record)
-    for attempt in range(retries):
+    for attempt in range(max_retries):
         try:
             raw = client.chat(msgs, temperature=temperature, max_tokens=2048)
         except Exception as e:  # noqa: BLE001
-            log.error(f"Teacher 调用失败: {e}; url={record.url}")
-            return None
+            log.error(f"Teacher 调用失败({attempt+1}/{max_retries}): {e}; url={record.url}")
+            time.sleep(2 ** min(attempt, 4))
+            continue
         result = _parse_synthesis(raw, record)
         if result is not None:
             return result
-        log.warning(f"解析失败(尝试 {attempt+1}/{retries}), url={record.url}")
+        # 解析失败，记录原始响应用于调试
+        log.warning(f"解析失败(尝试 {attempt+1}/{max_retries}), url={record.url}")
+        if attempt < max_retries - 1:
+            log.debug(f"原始响应前200字: {raw[:200]}")
+    log.error(f"合成彻底失败，已重试 {max_retries} 次; url={record.url}")
     return None
 
 

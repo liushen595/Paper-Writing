@@ -96,6 +96,16 @@ def test_safe_json_extract():
         safe_json_extract("no json here")
 
 
+def test_safe_json_extract_repair():
+    from src.data.llm_client import safe_json_extract
+    # 截断修复：嵌套 JSON 外层缺闭合括号
+    trunc = '{"label": "Threat", "details": {"a": 1}, "cat": "Cyber", "prob": 0.9'
+    r = safe_json_extract(trunc)
+    assert r["label"] == "Threat"
+    assert r["details"]["a"] == 1
+    assert r["cat"] == "Cyber"
+
+
 def test_doj_loader(tmp_path: Path):
     from src.data.doj_loader import load_doj_records, extract_case_elements
     p = tmp_path / "t.jsonl"

@@ -98,7 +98,7 @@ def build_client(provider_name: Optional[str] = None, env: Optional[EnvConfig] =
 
 
 def safe_json_extract(text: str) -> Any:
-    """从 LLM 输出中抽取首个 JSON 对象/数组，自动剥离 markdown 代码块。"""
+    """从 LLM 输出中抽取首个 JSON 对象/数组，自动剥离 markdown 代码块，支持截断修复。"""
     text = text.strip()
     # 剥离 ```json ... ``` 或 ``` ... ``` 包裹
     if text.startswith("```"):
@@ -108,10 +108,62 @@ def safe_json_extract(text: str) -> Any:
             text = text[first_nl + 1 : last_fence].strip()
     for start, end in (("{", "}"), ("[", "]")):
         s = text.find(start)
+        if s == -1:
+            continue
         e = text.rfind(end)
-        if s != -1 and e != -1 and e > s:
+        if e != -1 and e > s:
             try:
                 return json.loads(text[s : e + 1])
             except json.JSONDecodeError:
-                continue
+                # 可能是嵌套 JSON 导致 rfind 找到内层闭合括号，尝试修复
+                pass
+        # 截断修复：闭合括号不匹配或不存在，尝试自动补全
+        return _repair_truncated_json(text[s:], start, end)
     raise ValueError(f"无法从 LLM 输出中解析 JSON: {text[:200]}...")
+
+
+def _repair_truncated_json(text: str, start: str, end: str) -> Any:
+    """尝试修复被截断的 JSON：去掉尾部不完整字段，补全括号。"""
+    text = text.rstrip()
+    # 去掉最后一个不完整的字符串值（没有闭合引号）
+    # 找最后一个未闭合的引号
+    in_string = False
+    escape_next = False
+    last_quote_pos = -1
+    for i, ch in enumerate(text):
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            if in_string:
+                last_quote_pos = i
+    # 如果 in_string 为 True，说明有未闭合的字符串，截断到最后一个完整值之后
+    if in_string and last_quote_pos > 0:
+        # 往回找到最后一个完整的 key-value 对的逗号位置
+        text = text[:last_quote_pos].rstrip()
+        # 去掉尾部可能残留的逗号
+        while text.endswith(","):
+            text = text[:-1].rstrip()
+
+    # 补全缺失的括号
+    stack = []
+    for ch in text:
+        if ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch == "}" or ch == "]":
+            if stack and stack[-1] == ch:
+                stack.pop()
+    # 追加缺失的闭合括号
+    for closing in reversed(stack):
+        text += closing
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise ValueError(f"JSON 修复失败，原始文本: {text[:200]}...")
