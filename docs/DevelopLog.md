@@ -109,3 +109,40 @@
 ### 硬件说明
 - 当前开发机 RTX 4060 Laptop 8GB，QLoRA 8B 模型仅 ~4-5GB 显存 + 梯度/LoRA 开销，完整训练（SFT/DPO/Stepwise）可能溢出。
 - 完整训练需租用服务器（建议 RTX 4090 24GB 或 A6000 48GB）。
+
+---
+
+## 2026-07-06 14:48 — _flush 分批 bug 修复、body 加入造数、README、prompt 英文化
+
+### 本次代码更改做了什么
+
+1. **修复 `_flush` 分批写入严重 bug**（`src/data/synthesis.py`）
+   - 旧逻辑：`partial=True` 用 append 模式，`partial=False` 用 write 模式（先 `unlink` 删除文件再重写）。
+   - 问题：最终 `_flush(partial=False)` 会删除文件，只写入最后一批数据，中间所有批次（每50条一 flush）全部丢失。
+   - 修复：`run_synthesis` 首次运行时清空文件，`_flush` 始终用 append 模式（`"a"`），不再区分 partial。
+
+2. **造数加入 DOJ 新闻稿正文**（`src/data/synthesis.py` + `src/data/doj_loader.py`）
+   - `_build_messages`：新增 `body_excerpt = record.body[:800]`，USER_TEMPLATE 加入 `- Body: {body}` 字段。
+   - `extract_case_elements`：`text` 从 `title + summary` 扩展为 `title + summary + body[:500]`，犯罪类型提取更准。
+
+3. **所有 LLM API 提示词改为英文**
+   - `synthesis.py`：SYSTEM_PROMPT + USER_TEMPLATE 全英文，要求 "All content must be in English"。
+   - `preference.py`：JUDGE_SYSTEM + JUDGE_USER_TEMPLATE 全英文。
+   - `hard_negatives.py`：SYSTEM_PROMPT + USER_TEMPLATE 全英文。
+   - `llm_judge.py`：QUALITY_JUDGE_SYSTEM + QUALITY_USER_TEMPLATE 全英文。
+   - `dataset.py`：`_from_hard` 的 fallback thought_process 从中文改为英文。
+
+4. **写 README.md**
+   - 完整目录结构树（每个文件/目录的作用）。
+   - 环境配置（conda + .env + 硬件要求）。
+   - 训练流程详解（Phase 0/1/2/3 的输入/输出/原理/命令/预计耗时）。
+   - 评估基线与指标说明。
+   - 参考文献列表。
+
+### 测试结果
+- Pytest: 12/12 passed (1.16s)。
+
+### 下一步
+- 在开发机上用 `--limit 50` 跑完整造数验证 Agnes API 稳定性和数据质量。
+- 下载泛语料 haystack（推荐 `allenai/c4` 随机采样 5000-10000 条）。
+- 租服务器执行完整训练。
