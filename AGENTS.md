@@ -7,3 +7,7 @@
 - 环境 ML 已经建好，有一些基础的包，激活即可
 - 向 ML 环境中安装包时，必须使用 `conda install`，不得使用 `pip install`，以确保包的兼容性和稳定性
 - 如果遇到难以解决的依赖冲突，新建 conda 环境，统一使用 `conda install` 或 `pip install`，但选定一种后就使用同一种，不要混用
+
+## 写代码前的工作
+- 查阅 docs/DevelopLog.md ，了解之前的开发内容
+- 同时查看 git 提交记录，了解代码的修改历史
