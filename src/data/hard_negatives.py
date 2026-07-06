@@ -18,15 +18,15 @@ from .llm_client import ChatMessage, BaseClient, build_client, safe_json_extract
 log = get_logger("hard_negatives")
 
 
-SYSTEM_PROMPT = """你是安全言论生成专家。给定一个犯罪主题，生成一条**话题相关、词汇相近但语境明显安全**的言论，用于训练模型降低误报率(FPR)。
-安全语境包括：游戏讨论、影视剧情、学术研究、小说创作、假设场景、新闻报道引用。
-不得包含真实犯罪意图。只输出 JSON，不要解释。"""
+SYSTEM_PROMPT = """You are a safe-utterance generation expert. Given a crime theme, generate a **topically similar but obviously context-safe** utterance, used to train a model to reduce false positive rate (FPR).
+Safe contexts include: gaming discussion, movie/TV plot, academic research, fiction writing, hypothetical scenario, news reporting.
+Must NOT contain real criminal intent. Output ONLY JSON, no explanation. All content in English."""
 
-USER_TEMPLATE = """犯罪主题: {category}
-相关案情摘要: {summary}
+USER_TEMPLATE = """Crime theme: {category}
+Related case summary: {summary}
 
-输出 JSON:
-{{"text": "<安全言论>", "context": "<安全语境类型>", "label": "Safe"}}"""
+Output JSON (all content in English):
+{{"text": "<safe utterance>", "context": "<safe context type>", "label": "Safe"}}"""
 
 
 def llm_augment(client: BaseClient, category: str, summary: str, n: int = 1) -> list[dict]:

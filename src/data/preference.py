@@ -24,22 +24,22 @@ from .llm_client import ChatMessage, BaseClient, build_client, safe_json_extract
 log = get_logger("preference")
 
 
-JUDGE_SYSTEM = """你是犯罪意图判别的裁判。给定用户言论和两个候选判别回复(A/B)，判断哪个更准确识别隐式犯罪意图。
-评判维度：(1) 推理是否严谨 (2) 是否避免过度敏感 (3) 是否捕捉语境异常。
-对推理密集型样本，参考给定的 ground-truth 标签与参考推理。
-只输出 JSON: {"winner": "A"|"B"|"tie", "reason": "<简短理由>"}"""
+JUDGE_SYSTEM = """You are a judge for criminal intent detection. Given a user message and two candidate responses (A/B), determine which one more accurately identifies implicit criminal intent.
+Evaluation dimensions: (1) Is the reasoning rigorous? (2) Does it avoid over-sensitivity? (3) Does it capture contextual anomalies?
+For reasoning-intensive samples, refer to the provided ground-truth label and reference reasoning.
+Output ONLY JSON: {"winner": "A"|"B"|"tie", "reason": "<brief reason>"}"""
 
-JUDGE_USER_TEMPLATE = """用户言论: {prompt}
-参考标签: {ref_label}
-参考推理: {ref_cot}
+JUDGE_USER_TEMPLATE = """User message: {prompt}
+Reference label: {ref_label}
+Reference reasoning: {ref_cot}
 
-候选 A:
+Candidate A:
 {answer_a}
 
-候选 B:
+Candidate B:
 {answer_b}
 
-哪个候选更准确？输出 JSON。"""
+Which candidate is more accurate? Output JSON."""
 
 
 @dataclass

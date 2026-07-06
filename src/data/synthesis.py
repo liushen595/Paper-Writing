@@ -1,7 +1,7 @@
 """Phase 0 造数：用 Teacher LLM 把 DOJ 犯罪叙事改写为隐式意图言论 + Explicit CoT。
 
 流程（参照 Wen et al. 2023 的语言学特征提示 + ToXCL 的犯罪类别生成）:
-  1. 从 DOJ 记录抽取案情要素（crime_types / title / summary）。
+  1. 从 DOJ 记录抽取案情要素（crime_types / title / summary / body）。
   2. Teacher LLM 生成:
      a) implicit_threat: 不含敏感词的隐式意图言论（应用 euphemism/circumlocution/sarcasm/metaphor/rhetorical-question）。
      b) hard_negative: 语义相近但语境安全的对照言论。
@@ -26,40 +26,43 @@ from .llm_client import ChatMessage, BaseClient, build_client, safe_json_extract
 log = get_logger("synthesis")
 
 
-SYSTEM_PROMPT = """你是一名犯罪意图数据合成专家。你的任务是把给定的美国司法部(DOJ)犯罪新闻稿，改写成"隐式犯罪意图言论"及其配套推理，用于训练一个能识别隐式威胁的小语言模型。
+SYSTEM_PROMPT = """You are a criminal-intent data synthesis expert. Your task is to rewrite a given U.S. Department of Justice (DOJ) press release into an "implicit criminal intent utterance" with its accompanying reasoning chain, used to train a small language model to recognize implicit threats.
 
-你必须严格遵守：
-1. implicit_threat 必须是一句**普通人可能在网上发布的话**，**不得包含任何敏感词或犯罪关键词**（如：杀、炸、毒、枪、劫、毒品名等），必须通过委婉语(euphemism)、迂回(circumlocution)、反讽(sarcasm)、隐喻(metaphor)、反问(rhetorical question) 之一来表达犯罪意图。
-2. hard_negative 是与 implicit_threat 话题相近、词汇相近但**语境明显安全**的话（如游戏/影视/学术/小说/假设场景），用来降低误报。
-3. thought_process 是显式推理链，用 "[推理] A -> B -> C -> 结论" 的格式，逐步从语境推断意图。
-4. label 取 "Threat" 或 "Safe"；probability 取 0.0-1.0；category 从给定列表选取或自拟。
+You MUST strictly follow these rules:
+1. implicit_threat must be a single sentence that **an ordinary person might post online**. It must **NOT contain any sensitive or criminal keywords** (e.g., kill, bomb, poison, gun, rob, drug names, etc.). It MUST express criminal intent through one of: euphemism, circumlocution, sarcasm, metaphor, or rhetorical question.
+2. hard_negative must be a sentence that is **topically similar** to implicit_threat but has an **obviously safe context** (e.g., gaming, movie, academic, fiction, hypothetical scenario). Used to reduce false positive rate.
+3. thought_process is an explicit chain-of-thought reasoning in the format: "[Reasoning] A -> B -> C -> Conclusion", step by step inferring intent from context.
+4. label is either "Threat" or "Safe"; probability is 0.0-1.0; category is chosen from the given list or self-defined.
 
-只输出一个 JSON 对象，不要任何额外解释，不要 markdown 代码块。"""
+**Output ONLY a JSON object. No extra text, no markdown code blocks. All content must be in English.**"""
 
 
-USER_TEMPLATE = """DOJ 案情要素:
-- 标题: {title}
-- 摘要: {summary}
-- 犯罪类型: {crime_types}
+USER_TEMPLATE = """DOJ Case Elements:
+- Title: {title}
+- Summary: {summary}
+- Body: {body}
+- Crime Types: {crime_types}
 
-请输出如下 JSON（不要 markdown 代码块）:
+Output the following JSON (no markdown code blocks, all content in English):
 {{
-  "implicit_threat": "<不含敏感词的隐式意图言论>",
-  "hard_negative": "<语境安全的对照言论>",
-  "thought_process": "[推理] ... -> ... -> 属于高危隐式意图。",
+  "implicit_threat": "<implicit intent utterance without sensitive keywords>",
+  "hard_negative": "<safe-context utterance>",
+  "thought_process": "[Reasoning] ... -> ... -> This constitutes a high-risk implicit intent.",
   "label": "Threat",
   "probability": 0.95,
-  "category": "<如 Cyber/Narcotics/Aviation/Fraud/Violence/...>"
+  "category": "<e.g. Cyber/Narcotics/Aviation/Fraud/Violence/...>"
 }}"""
 
 
 def _build_messages(record: DOJRecord) -> list[ChatMessage]:
     elem = extract_case_elements(record)
+    body_excerpt = record.body[:800] if record.body else record.summary
     return [
         ChatMessage("system", SYSTEM_PROMPT),
         ChatMessage("user", USER_TEMPLATE.format(
             title=elem["title"],
             summary=elem["summary"],
+            body=body_excerpt,
             crime_types=", ".join(elem["crime_types"]),
         )),
     ]
@@ -117,6 +120,10 @@ def run_synthesis(
         log.warning(f"{train_path} 已存在且 overwrite=False，跳过；删除该文件或设置 overwrite=True 重跑")
         return
 
+    # 首次运行时清空输出文件
+    train_path.unlink(missing_ok=True)
+    test_path.unlink(missing_ok=True)
+
     criminal_path = (PROJECT_ROOT / data_cfg.raw_criminal).resolve()
     records = load_doj_records(criminal_path, limit=limit)
     log.info(f"待合成 DOJ 记录数: {len(records)}")
@@ -140,10 +147,7 @@ def run_synthesis(
 
 
 def _flush(results: list[dict], train_path: Path, test_path: Path, train_ratio: float, seed: int, partial: bool) -> None:
-    mode = "a" if partial else "w"
-    if not partial:
-        train_path.unlink(missing_ok=True)
-        test_path.unlink(missing_ok=True)
+    """将 results 按 train_ratio 划分后追加写入文件。partial=True 时不清空文件。"""
     if not results:
         return
     rng = random.Random(seed)
@@ -151,11 +155,12 @@ def _flush(results: list[dict], train_path: Path, test_path: Path, train_ratio: 
     rng.shuffle(indexed)
     n_train = int(len(indexed) * train_ratio)
     train_idx = {i for i, _ in indexed[:n_train]}
-    with open(train_path, mode, encoding="utf-8") as f:
+    # 始终用追加模式；首次写入前由 run_synthesis 清空文件
+    with open(train_path, "a", encoding="utf-8") as f:
         for i, r in indexed:
             if i in train_idx:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    with open(test_path, mode, encoding="utf-8") as f:
+    with open(test_path, "a", encoding="utf-8") as f:
         for i, r in indexed:
             if i not in train_idx:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")

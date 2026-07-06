@@ -56,8 +56,8 @@ def load_doj_records(path: str | Path, limit: int | None = None) -> list[DOJReco
 
 
 def extract_case_elements(record: DOJRecord) -> dict:
-    """从 title + summary 中提取犯罪类型种子（粗抽取，供 Teacher LLM 改写）。"""
-    text = (record.title + " " + record.summary).lower()
+    """从 title + summary + body 中提取犯罪类型种子（粗抽取，供 Teacher LLM 改写）。"""
+    text = (record.title + " " + record.summary + " " + record.body[:500]).lower()
     crime_types: list[str] = []
     type_keywords = {
         "Cyber": ["cyber", "computer intrusion", "ransomware", "hacking", "scattered spider"],

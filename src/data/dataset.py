@@ -66,7 +66,7 @@ def _from_synth(d: dict) -> TrainExample:
 def _from_hard(d: dict) -> TrainExample:
     return TrainExample(
         text=d.get("text", ""),
-        thought_process=d.get("thought_process", "[推理] 安全语境 -> Safe。"),
+        thought_process=d.get("thought_process", "[Reasoning] Safe context -> Safe."),
         label=d.get("label", "Safe"),
         category=d.get("category", "NonCriminal"),
         probability=float(d.get("probability", 0.0)),
