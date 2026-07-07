@@ -82,18 +82,72 @@ def toxcl_explanation_score(model_cot: str, ref_cot: str, model_label: str, ref_
     return {"status": "both_present", "score": f1 * 100, "f1": f1}
 
 
+def _load_predictions(path: str | Path) -> list[dict]:
+    """支持 JSON（run_eval.py 输出）与 CSV 两种格式。"""
+    path = Path(path)
+    rows: list[dict] = []
+    if path.suffix.lower() == ".json":
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            rows = data
+        else:
+            raise ValueError(f"JSON predictions 文件需为列表: {path}")
+    else:
+        with open(path, "r", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                rows.append(r)
+    return rows
+
+
+def _biased_first_rate(per_sample: list[dict]) -> float:
+    """位置偏差：judge 在 A/B 顺序固定时偏向第一个候选的比率。
+
+    用启发式近似：model_label 与 ref_label 一致率 vs 全样本一致率之差，若 judge 系统性偏保守（多数判 Safe），
+    则 first-rate 体现为“倾向拒绝”。这里以"judge_score >= 7 但 model_label != ref_label"的样本占比做近似。
+    """
+    if not per_sample:
+        return 0.0
+    n_bias = sum(
+        1 for r in per_sample
+        if r.get("score", 0) >= 7 and r.get("correct", False) is False
+    )
+    return n_bias / len(per_sample)
+
+
+def _verbosity_bias_rate(per_sample: list[dict]) -> float:
+    """冗长偏差：judge 倾向给更长 model_cot 更高分的比率。
+
+    近似：median_cot_len 划分长短两组，比较两组 mean score 之差，归一化到 [0,1]。
+    """
+    if not per_sample:
+        return 0.0
+    lens = [len(str(r.get("model_cot", "")).split()) for r in per_sample]
+    if not lens:
+        return 0.0
+    median = sorted(lens)[len(lens) // 2]
+    short_scores = [r.get("score", 0) for r, l in zip(per_sample, lens) if l < median]
+    long_scores = [r.get("score", 0) for r, l in zip(per_sample, lens) if l >= median]
+    if not short_scores or not long_scores:
+        return 0.0
+    diff = (sum(long_scores) / len(long_scores)) - (sum(short_scores) / len(short_scores))
+    return max(0.0, min(1.0, diff / 10.0))  # score 1-10，归一化到 0-1
+
+
 def run_judge_eval(
-    predictions_csv: str | Path,
+    predictions_path: str | Path,
     judge_provider: str = "glm",
     judge_model: Optional[str] = None,
     out_path: Optional[str | Path] = None,
 ) -> JudgeEvalResult:
-    """对一批模型预测做 LLM-as-judge 质量评估。predictions_csv 含 text/model_label/model_cot/ref_label/ref_cot 列。"""
+    """对一批模型预测做 LLM-as-judge 质量评估。
+
+    predictions_path 支持：
+    - JSON（run_eval.py 输出的 predictions_<name>.json，含 text/model_label/model_cot/ref_label/ref_cot）
+    - CSV（同列名）
+    """
     client = build_client(provider_name=judge_provider, model=judge_model)
-    rows: list[dict] = []
-    with open(predictions_csv, "r", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            rows.append(r)
+    rows = _load_predictions(predictions_path)
     per_sample: list[dict] = []
     correct = 0
     for r in rows:
@@ -106,14 +160,19 @@ def run_judge_eval(
         per_sample.append({**r, **res})
     s1 = correct / max(1, len(rows))
     s2 = correct / max(1, len([r for r in rows if r.get("ref_label") != "tie"]))
+    bias_first = _biased_first_rate(per_sample)
+    bias_verb = _verbosity_bias_rate(per_sample)
     result = JudgeEvalResult(
         n=len(rows), s1_agreement=s1, s2_agreement=s2,
-        biased_first_rate=0.0, verbosity_bias_rate=0.0, per_sample=per_sample,
+        biased_first_rate=bias_first, verbosity_bias_rate=bias_verb, per_sample=per_sample,
     )
     if out_path:
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result.__dict__, f, ensure_ascii=False, indent=2)
-        log.info(f"Judge 评估结果保存到 {out_path}; S1={s1:.3f} S2={s2:.3f} n={len(rows)}")
+        log.info(
+            f"Judge 评估结果保存到 {out_path}; S1={s1:.3f} S2={s2:.3f} "
+            f"bias_first={bias_first:.3f} bias_verb={bias_verb:.3f} n={len(rows)}"
+        )
     return result

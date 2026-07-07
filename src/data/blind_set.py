@@ -45,9 +45,29 @@ def assemble_blind_set(
         })
 
     haystack: list[dict] = []
+    # 来源1: synth 内部展开的 hard_negative（来自 hard_negatives.jsonl）
     hard = load_jsonl((PROJECT_ROOT / data_cfg.synthesized_dir / "hard_negatives.jsonl").resolve())
     for h in hard:
         haystack.append({"text": h.get("text", ""), "label": h.get("label", "Safe"), "source": "haystack_hard", "category": h.get("category", ""), "ground_truth_cot": h.get("thought_process", "")})
+
+    # 来源2: 配置中的泛语料草垛（haystack_path，例如 WildChat-nontoxic 英文子集）
+    cfg_haystack = getattr(data_cfg, "haystack_path", "") or ""
+    if cfg_haystack:
+        cfg_haystack_path = Path(cfg_haystack)
+        if cfg_haystack_path.exists():
+            cfg_records = load_jsonl(cfg_haystack_path)
+            haystack_size = getattr(data_cfg, "haystack_size", 0) or 0
+            if haystack_size and haystack_size > 0 and len(cfg_records) > haystack_size:
+                import random as _rng
+                _rng.Random(data_cfg.seed).shuffle(cfg_records)
+                cfg_records = cfg_records[:haystack_size]
+            for r in cfg_records:
+                haystack.append({"text": r.get("text", ""), "label": "Safe", "source": "haystack_wildchat", "category": "", "ground_truth_cot": ""})
+            log.info(f"从 cfg.haystack_path 加载 {len(cfg_records)} 条草垛 -> {cfg_haystack_path}")
+        else:
+            log.warning(f"cfg.haystack_path 不存在，跳过: {cfg_haystack_path}")
+
+    # 来源3: CLI 传入的额外草垛（保留向后兼容）
     if extra_haystack_path and Path(extra_haystack_path).exists():
         for r in load_jsonl(extra_haystack_path):
             haystack.append({"text": r.get("text", ""), "label": "Safe", "source": "haystack_extra", "category": "", "ground_truth_cot": ""})

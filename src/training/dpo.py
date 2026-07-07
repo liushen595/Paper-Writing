@@ -95,5 +95,15 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
     )
     trainer.train(resume_from_checkpoint=str(resume_ckpt) if resume_ckpt else None)
     trainer.save_model(str(out_dir))
+
+    # 保留 SFT 阶段的分类头，使 dpo-only baseline 可加载完整 StudentModel
+    import shutil
+    sft_cls_head = sft_ckpt / "classifier_head.pt"
+    if sft_cls_head.exists():
+        shutil.copy2(sft_cls_head, out_dir / "classifier_head.pt")
+        log.info(f"分类头已复制到 DPO 输出目录: {sft_cls_head} -> {out_dir / 'classifier_head.pt'}")
+    else:
+        log.warning(f"SFT 分类头不存在: {sft_cls_head}; dpo-only baseline 将使用随机初始化的分类头")
+
     log.info(f"DPO 训练完成, 模型保存到 {out_dir}")
     return out_dir

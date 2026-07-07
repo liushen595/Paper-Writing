@@ -76,6 +76,14 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None) 
         f.write(table)
         f.write("\n")
     log.info(f"评估完成, 指标表 -> {table_path}")
+
+    # 渲染论文图表（混淆矩阵 PNG / Table 1 CSV / TPR-FPR 柱状图 / Table 2 延迟表）
+    try:
+        from .visualize import visualize_all
+        visualize_all(out_dir, reports)
+    except Exception as e:
+        log.warning(f"可视化渲染失败（不影响指标表）: {e}")
+
     return table_path
 
 
@@ -85,15 +93,15 @@ def _build_baseline(name: str, cfg: ExperimentConfig) -> Baseline:
         return ToxicBertBaseline()
     if name == "llama3-zeroshot":
         return Llama3ZeroShotBaseline(model_name=cfg.sft.base_model.replace("-Instruct", "-Instruct"))
-    if name in ("explicit-cot", "sft-no-dpo", "implicit-cot"):
+    if name in ("explicit-cot", "sft-no-dpo", "implicit-cot", "dpo-only"):
         ckpt_map = {
             "explicit-cot": cfg.sft.output_dir,
             "sft-no-dpo": cfg.sft.output_dir,
             "implicit-cot": cfg.implicit_cot.output_dir,
+            "dpo-only": cfg.dpo.output_dir,
         }
         conditional = name == "implicit-cot"
         return StudentBaseline(name, ckpt_map[name], cfg.sft, conditional_decoding=conditional)
     if name == "roberta-large":
-        from .baselines import StudentBaseline as _S
-        raise NotImplementedError("roberta-large 基线需先训练 RoBERTa Teacher，见 src/models/classifier_head.py")
+        raise NotImplementedError("roberta-large 基线已移除（按决策不再训练 RoBERTa Teacher）")
     raise ValueError(f"未知 baseline: {name}")

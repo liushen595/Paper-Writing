@@ -51,7 +51,7 @@ Output the following JSON (no markdown code blocks, all content in English):
   "hard_negative": "<safe-context utterance>",
   "thought_process": "[Reasoning] ... -> ... -> This constitutes a high-risk implicit intent.",
   "label": "Threat",
-  "probability": 0.95,
+  "probability": <your calibrated confidence in 0.0-1.0; vary by case clarity, do NOT hardcode a constant>,
   "category": "<e.g. Cyber/Narcotics/Aviation/Fraud/Violence/...>"
 }}"""
 

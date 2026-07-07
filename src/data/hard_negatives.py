@@ -52,12 +52,58 @@ def llm_augment(client: BaseClient, category: str, summary: str, n: int = 1) -> 
     return out
 
 
+def from_synth_internal(data_cfg: DataConfig) -> list[dict]:
+    """从已合成的 train/test.jsonl 中抽取 hard_negative 字段，展开为独立的 Safe 样本。
+
+    synthesis.py 的输出 schema 把 implicit_threat 与 hard_negative 放在同一记录里，
+    label 只标 Threat；下游 dataset.py 需要独立的 Safe 样本，否则分类头学不到 Safe 类。
+    本函数把每条记录的 hard_negative 字段拆成一条 {text, thought_process, label:Safe, ...}。
+    """
+    synth_dir = (PROJECT_ROOT / data_cfg.synthesized_dir).resolve()
+    samples: list[dict] = []
+    for split in ("train", "test"):
+        path = synth_dir / f"{split}.jsonl"
+        if not path.exists():
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                text = d.get("hard_negative") or d.get("text_safe", "")
+                if not text:
+                    continue
+                prob = d.get("probability")
+                if isinstance(prob, (int, float)):
+                    safe_prob = max(0.0, min(0.3, 1.0 - float(prob)))
+                else:
+                    safe_prob = 0.05
+                samples.append({
+                    "text": text,
+                    "thought_process": d.get("hard_negative_thought_process")
+                        or "[Reasoning] topically similar but safe context -> no criminal intent -> Safe.",
+                    "label": "Safe",
+                    "probability": safe_prob,
+                    "category": d.get("category", "NonCriminal"),
+                    "source_url": d.get("source_url", ""),
+                    "split_origin": split,
+                })
+    log.info(f"从 synth 内部展开 hard_negative: {len(samples)} 条 Safe 样本")
+    return samples
+
+
 def merge_hard_negatives(data_cfg: DataConfig, augmented_path: Optional[Path] = None) -> Path:
-    """合并所有硬负样本到一个文件（hard_negatives 来自 synthesis，可选 LLM 增强），供 dataset.py 使用。"""
+    """合并所有硬负样本到一个文件，供 dataset.py 使用。
+
+    顺序：
+      1. 无条件从 train/test.jsonl 抽取 hard_negative 字段（核心来源，避免硬负样本数据丢失）。
+      2. 可选合并 LLM 增强的额外硬负样本（augmented_path，例如边界模糊的安全言论重写）。
+    """
     out_dir = (PROJECT_ROOT / data_cfg.synthesized_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "hard_negatives.jsonl"
-    samples: list[dict] = []
+    samples: list[dict] = from_synth_internal(data_cfg)
     if augmented_path and Path(augmented_path).exists():
         with open(augmented_path, "r", encoding="utf-8") as f:
             for line in f:

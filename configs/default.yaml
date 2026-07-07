@@ -10,6 +10,8 @@ data:
   train_ratio: 0.8
   seed: 42
   max_text_len: 512
+  haystack_path: "data/haystack/wildchat_nontoxic.jsonl"  # WildChat-nontoxic 英文子集
+  haystack_size: 5000                                     # 草垛采样条数（FPR 分母）
 
 sft:
   base_model: "meta-llama/Meta-Llama-3-8B-Instruct"
@@ -57,7 +59,7 @@ implicit_cot:
 eval:
   blind_csv: "data/blind/test_blind.csv"
   threshold: 0.5
-  baselines: ["toxic-bert", "llama3-zeroshot", "explicit-cot", "sft-no-dpo", "implicit-cot"]
+  baselines: ["toxic-bert", "llama3-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
   judge_provider: "agnes"
   judge_swap_positions: true
   judge_reference_guided: true

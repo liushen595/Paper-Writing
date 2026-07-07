@@ -104,14 +104,48 @@ class StudentModel(nn.Module):
 
     @classmethod
     def load(cls, sft_cfg: SFTConfig, ckpt_dir: str | Path) -> "StudentModel":
-        model = cls(sft_cfg)
+        """加载 StudentModel。ckpt_dir 里应有 adapter_config.json + adapter_model.* + classifier_head.pt。
+
+        SFT 与 DPO checkpoint 都用本方法加载：DPO 训练时已把 SFT 的 classifier_head.pt 复制到 DPO 输出目录，
+        DPO 的 LoRA adapter 直接通过 PeftModel.from_pretrained 套到基座上。
+        """
+        import os
+        from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+        from peft import PeftModel
+
         ckpt_dir = Path(ckpt_dir)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type=sft_cfg.quant_type,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=sft_cfg.double_quant,
+        )
+        log.info(f"加载基座模型 {sft_cfg.base_model} (4-bit NF4) for ckpt {ckpt_dir}")
+        base = AutoModelForCausalLM.from_pretrained(
+            sft_cfg.base_model, quantization_config=bnb_config, device_map="auto",
+        )
+        if (ckpt_dir / "adapter_config.json").exists():
+            model = PeftModel.from_pretrained(base, str(ckpt_dir))
+            log.info(f"已加载 LoRA adapter: {ckpt_dir}")
+        else:
+            log.warning(f"未找到 adapter_config.json: {ckpt_dir}; 使用未微调基座")
+            model = base
+
+        # 包装成 StudentModel 以复用分类头逻辑
+        obj = cls.__new__(cls)
+        torch.nn.Module.__init__(obj)
+        obj.base = model
+        obj.hidden_size = base.config.hidden_size
+        obj.classifier = ClassifierHead(obj.hidden_size)
+        obj.classifier.to(base.dtype)
         cls_head_path = ckpt_dir / "classifier_head.pt"
         if cls_head_path.exists():
             state = torch.load(cls_head_path, map_location="cpu")
-            model.classifier.load_state_dict(state)
+            obj.classifier.load_state_dict(state)
             log.info(f"分类头加载自 {cls_head_path}")
-        return model
+        else:
+            log.warning(f"分类头不存在: {cls_head_path}; 使用随机初始化")
+        return obj
 
 
 def _causal_lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:

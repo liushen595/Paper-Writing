@@ -1,4 +1,4 @@
-"""评估基线：toxic-bert / llama3-zeroshot / explicit-cot / sft-no-dpo / roberta-large。
+"""评估基线：toxic-bert / llama3-zeroshot / explicit-cot / sft-no-dpo / dpo-only / implicit-cot。
 
 每个 baseline 暴露 predict(text) -> (label, prob, cot?) 的统一接口。
 """

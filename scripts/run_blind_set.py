@@ -1,4 +1,10 @@
-"""盲测集组装入口。"""
+"""盲测集组装入口。
+
+草垛来源（优先级）:
+  1. cfg.data.haystack_path（如 data/haystack/wildchat_nontoxic.jsonl）— 主路径
+  2. --extra-haystack CLI 参数 — 向后兼容额外补充
+  3. data/synthesized/hard_negatives.jsonl — 总是自动包含
+"""
 from __future__ import annotations
 
 import argparse

@@ -156,12 +156,58 @@ def load_preference_pairs(path: str | Path) -> list[dict]:
     return out
 
 
+def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tuple[float, ...] = (0.3, 1.0)) -> "callable":
+    """构造基于 SFT checkpoint 的候选生成器。
+
+    对同一 prompt 用不同温度采样 n 个候选：低温=保守（倾向 chosen），高温=多样（更可能产生被 reject 的草率回答）。
+    生成内容为 SFT 学到的 "<thought_process> -> <label>" 形式，便于 DPO judge 比较推理严谨度。
+    """
+    import torch
+    from ..models.student import StudentModel, load_tokenizer
+    from ..data.dataset import SYSTEM_PROMPT_SFT, INSTRUCTION_TEMPLATE
+
+    log.info(f"加载 SFT 候选生成器: ckpt={ckpt_dir}")
+    tokenizer = load_tokenizer(sft_cfg.base_model)
+    model = StudentModel.load(sft_cfg, ckpt_dir)
+    model.eval()
+    device = next(model.parameters()).device
+    system = SYSTEM_PROMPT_SFT
+    instr_tpl = INSTRUCTION_TEMPLATE
+
+    def _gen(prompt: str, n: int = 2) -> list[str]:
+        temps = list(temperatures)
+        while len(temps) < n:
+            temps.append(temps[-1] + 0.2)
+        cands: list[str] = []
+        for i in range(n):
+            t = temps[i % len(temps)]
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": instr_tpl.format(text=prompt)},
+            ]
+            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=sft_cfg.max_seq_len).to(device)
+            with torch.no_grad():
+                out = model.base.generate(
+                    input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"],
+                    max_new_tokens=128, do_sample=True, temperature=t, top_p=0.95,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+            gen = tokenizer.decode(out[0][inputs["input_ids"].size(1):], skip_special_tokens=True)
+            cands.append(gen)
+        return cands
+
+    return _gen
+
+
 def run_preference_generation(
     data_cfg: DataConfig,
     dpo_cfg: DPOConfig,
     judge_provider: str = "glm",
     judge_model: Optional[str] = None,
     candidate_generator=None,
+    sft_cfg=None,
+    sft_ckpt: Optional[str | Path] = None,
     limit: Optional[int] = None,
 ) -> None:
     from .synthesis import load_synthesized
@@ -173,15 +219,23 @@ def run_preference_generation(
     if limit:
         samples = samples[:limit]
     judge = build_client(provider_name=judge_provider, model=judge_model)
+
+    # 候选生成器：优先显式传入 -> SFT 采样 -> 占位
+    if candidate_generator is None and sft_cfg is not None and sft_ckpt is not None:
+        candidate_generator = make_sft_candidate_generator(sft_cfg, sft_ckpt)
+    if candidate_generator is None:
+        log.warning("未提供 SFT 候选生成器，回退到 _dummy_candidate_gen；正式 DPO 训练不要用此结果")
+        candidate_generator = _dummy_candidate_gen
+
     out_path = (PROJECT_ROOT / data_cfg.preference_dir / "dpo_pairs.jsonl").resolve()
     pairs = build_preference_pairs(
-        samples, candidate_generator or _dummy_candidate_gen, judge, data_cfg, dpo_cfg,
+        samples, candidate_generator, judge, data_cfg, dpo_cfg,
         swap_positions=True, reference_guided=True,
     )
     save_preference_pairs(pairs, out_path)
 
 
 def _dummy_candidate_gen(prompt: str, n: int = 2) -> list[str]:
-    """占位候选生成器；正式运行时由 models.student.inference 提供 SFT 模型采样。"""
-    log.warning("使用占位候选生成器，正式训练请传入 models.student 的采样函数")
-    return [f"[推理] {prompt[:50]}... -> Threat。", f"[推理] {prompt[:50]}... -> Safe。"][:n]
+    """占位候选生成器；正式运行时由 make_sft_candidate_generator 提供 SFT 模型采样。"""
+    log.warning("使用占位候选生成器，正式训练请传入 SFT checkpoint")
+    return [f"[Reasoning] {prompt[:50]}... -> Threat.", f"[Reasoning] {prompt[:50]}... -> Safe."][:n]

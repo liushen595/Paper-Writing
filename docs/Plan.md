@@ -41,7 +41,7 @@
         ```json
         {"text": "谁知道高空客机驾驶舱门如果从里面反锁，外部是否有机械强制开启的物理接口？",
           "thought_process": "[推理] 询问客机驾驶舱门的物理破解 -> 规避了正常安全程序 -> 具有劫机或蓄意破坏的可能 -> 属于高危隐式意图。",
-          "label": "Threat", "probability": 0.95, "category": "Aviation/Aircraft"}
+          "label": "Threat", "probability": 0.82, "category": "Aviation/Aircraft"}
         ```
     *   *硬负样本构造:* "我在玩《GTA5》，谁知道怎么强制开启驾驶舱门？" -> label: "Safe"。
     *   *三分类偏好方案 (引自 Wen et al. 2023):* 所有样本归入隐式意图 (Implicit-Intent) > 显式意图 (Explicit-Intent) > 无意图 (No-Intent) 三档，档内视为等价，用于后续 DPO 偏好对的低分歧标注。
@@ -87,7 +87,7 @@
 为了证明模型的有效性并与 Baseline 形成严谨对比，评估必须基于未见过的盲测数据。
 
 *   **盲测数据集组装 (Zero-Knowledge Test Set)**
-    * **草垛 (The Haystack):** `crawler/output/doj_non_criminal.jsonl` 的 572 条非犯罪稿件作为部分安全背景，并下载 HuggingFace 中的"非毒性（Non-Toxic）"背景评论扩充。
+    * **草垛 (The Haystack):** `data/synthesized/hard_negatives.jsonl`（1231 条由 synthesis 展开的安全对照言论）+ HuggingFace `allenai/WildChat-nontoxic` 英文子集（5000 条真实用户-ChatGPT 多轮对话首条 user turn，见 `scripts/prepare_haystack.py`）。原 `doj_non_criminal.jsonl` 已弃用。
     * **针 (The Needles):** 划分在一开始使用 Teacher LLM 生成的隐式犯罪文本为训练集与测试集、使用测试集中未参与任何训练的隐式犯罪文本。**测试集 needles 必须与训练集零重叠**，且造数 Teacher 与训练 Student 不得共享该测试集。
     * **混合映射:** 通过随机种子脚本混合，生成 `test_blind.csv`，记录每条样本的来源（haystack/needle）与 ground-truth 标签。
 
@@ -96,7 +96,10 @@
     * **Baseline 2 (通用生成式):** 使用完全未经微调的 `Llama-3-8B-Instruct`（或其他本地小模型），采用 Zero-shot Prompting，评估其原始推理能力。
     * **Baseline 3 (Ablation - 显式模型):** 使用我们在 Phase 1 训练完成的，未进行思维链内化的显式 CoT 模型。
     * **Baseline 4 (Ablation - 无 DPO):** 使用 Phase 1 SFT 后、未经 Phase 2 DPO 的模型，验证 DPO 对 FPR 的贡献。
-    * **Baseline 5 (强小分类器蒸馏源):** Phase 1 中训练的 `RoBERTa-Large` 单独作为判别基线，验证"小模型 vs 内化 LLM"的取舍。
+    * **Baseline 5 (Ablation - 仅 DPO):** 使用 Phase 2 DPO 后的 LoRA 权重 + SFT 分类头，验证 DPO 在 SFT 基础上对隐式意图识别的边际贡献（与 Baseline 4 对照，量化 DPO 对 TPR/FPR 的双向影响）。
+    * **Baseline 6 (本方法 - 隐式内化):** 使用 Phase 3 Stepwise Internalization 训练后的模型，思维链已内化，无显式 CoT 输出。
+
+    > 注：原 Plan 中的 `RoBERTa-Large` 判别基线已移除：本任务以 LLM 内化为主路线，RoBERTa 蒸馏源作为可选增强保留在 Phase 1，但不单独作 baseline。
 
 *   **量化指标矩阵计算 (Quantitative Metrics)**
     * 所有测试必须基于硬性阈值（如判定概率 > 0.5 即视为 Threat）。

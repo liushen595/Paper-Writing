@@ -20,6 +20,8 @@ class DataConfig:
     train_ratio: float = 0.8
     seed: int = 42
     max_text_len: int = 512
+    haystack_path: str = ""        # WildChat-nontoxic 等泛语料草垛（绝对路径，由 _resolve_paths 解析）
+    haystack_size: int = 5000      # 草垛采样条数
 
 
 @dataclass
@@ -76,7 +78,7 @@ class EvalConfig:
     blind_csv: str = "data/blind/test_blind.csv"
     threshold: float = 0.5
     baselines: list[str] = field(
-        default_factory=lambda: ["toxic-bert", "llama3-zeroshot", "explicit-cot", "sft-no-dpo", "roberta-large"]
+        default_factory=lambda: ["toxic-bert", "llama3-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
     )
     judge_provider: str = "glm"
     judge_swap_positions: bool = True

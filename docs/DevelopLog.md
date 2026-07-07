@@ -146,3 +146,98 @@
 - 在开发机上用 `--limit 50` 跑完整造数验证 Agnes API 稳定性和数据质量。
 - 下载泛语料 haystack（推荐 `allenai/c4` 随机采样 5000-10000 条）。
 - 租服务器执行完整训练。
+
+---
+
+## 2026-07-07 15:55 — 环境重建 + Phase C/D（DPO 接续 + 评估可视化）
+
+### 本次代码更改做了什么
+
+1. **环境重建（替换 environment.yml）**
+   - 旧 ML 环境因 conda 安装 `bitsandbytes` 反复解析 CUDA 依赖导致 WSL 崩溃，整环境重建。
+   - 新环境：`conda create -n ML python=3.10` + 全量 `pip install`（清华源）。关键决策：
+     - `torch==2.5.1` 走 PyPI 官方 wheel，自带 CUDA 12.4 运行时，不依赖系统 cuda toolkit。
+     - `bitsandbytes==0.49.2` 走 PyPI 官方 wheel（自带 CUDA 后端 .so），不再用 conda-forge 的 CPU-only build。后者曾导致 4-bit QLoRA 静默退化且安装时崩溃，是本次重建的核心动因。
+   - 验证：`bitsandbytes.nn.Linear4bit` 在 cuda:0 上 4-bit 量化前向通过，`QuantState` 正常生成。
+   - 用 `pip-chill` + `pip list --format=freeze` 导出全量依赖，重写 `environment.yml` 为 `pip:` 段格式（符合 AGENTS.md "用 pip 不用 conda install"），固定 100+ 包确切版本以保证可复现。
+   - pytest 13/13 通过（含新环境验证）。
+
+2. **Phase C1：替换 DPO 候选生成器 stub**
+   - `src/data/preference.py`：
+     - 新增 `make_sft_candidate_generator(sft_cfg, ckpt_dir, temperatures=(0.3, 1.0))`：加载 SFT checkpoint，对同一 prompt 用不同温度采样 n 个候选，候选内容为 SFT 学到的 "<thought_process> -> <label>" 形式，便于 judge 比较推理严谨度。
+     - `run_preference_generation` 新增 `sft_cfg`/`sft_ckpt` 参数；优先级：显式 `candidate_generator` > SFT 采样 > `_dummy_candidate_gen`（带 warning）。
+     - `_dummy_candidate_gen` 文案英文化，仅用于流程冒烟。
+   - `scripts/run_preference.py`：新增 `--sft-ckpt` CLI 参数，缺省读 `cfg.sft.output_dir`；ckpt 不存在则 warning 并回退到 stub。
+
+3. **Phase C2：DPO 保留分类头**
+   - `src/training/dpo.py`：DPO 训练 `trainer.save_model` 后，新增逻辑把 SFT 的 `classifier_head.pt` 复制到 DPO 输出目录。这样 dpo-only baseline 可加载完整 StudentModel（DPO LoRA + SFT 分类头），无需重新构造分类头。
+   - 若 SFT 分类头不存在则 warning，不阻塞训练。
+
+4. **Phase C3：添加 dpo-only baseline + 重写 StudentModel.load**
+   - `src/models/student.py` 的 `StudentModel.load`：原实现只 `cls(sft_cfg)`（重新 `get_peft_model` 创建空 LoRA），无法加载 DPO adapter 权重。重写为：
+     - 用 `AutoModelForCausalLM.from_pretrained` + 4-bit 量化加载基座。
+     - 若 `ckpt_dir/adapter_config.json` 存在，用 `PeftModel.from_pretrained` 套上 LoRA adapter（SFT 与 DPO checkpoint 统一路径）。
+     - 加载 `classifier_head.pt` 到 `ClassifierHead`。
+   - `src/eval/run_eval.py`：`_build_baseline` 增加 `"dpo-only"` 路由，指向 `cfg.dpo.output_dir`，`conditional_decoding=False`（dpo-only 仍走显式推理，不做条件解码）。
+   - `src/utils/config.py` 的 `EvalConfig.baselines` 默认列表改为 6 个 baseline（含 dpo-only）。
+   - `configs/default.yaml`：baselines 增加 `"dpo-only"`。
+
+5. **Phase C4：移除 roberta-large baseline + 同步文档**
+   - `src/eval/run_eval.py` 的 `roberta-large` 路由改为 `raise NotImplementedError("roberta-large 基线已移除")`。
+   - `src/eval/baselines.py` docstring 更新为 6 个 baseline 列表。
+   - `docs/Plan.md` §3 Baselines：原 Baseline 5 (RoBERTa-Large) 替换为 Baseline 5 (Ablation - 仅 DPO) + Baseline 6 (本方法 - 隐式内化)，并加注 RoBERTa 蒸馏源保留为 Phase 1 可选增强。
+   - `docs/Methodology.md` §6.1 Baselines：同步改为 6 项，加 RoBERTa 移除说明。
+
+6. **Phase D1：新建 `src/eval/visualize.py`**
+   - 论文交付物图表渲染模块，输出到 `cfg.eval.output_dir`：
+     - `confusion_matrix_<name>.png`：每个 baseline 一张混淆矩阵图（图 1 系列），从 `predictions_<name>.json` 推 TP/FP/FN/TN，matplotlib `imshow` + 数字标注。
+     - `metrics_table.csv`：Table 1 机器可读版（baseline + tp/fp/fn/tn + tpr/fpr/precision/f1/accuracy + 延迟）。
+     - `tpr_fpr_bars.png`：跨 baseline TPR/FPR 柱状对比图（核心结果图），双色柱状 + 数值标注。
+     - `latency_table.md`：Table 2 显式 vs 隐式延迟对比 markdown 表，自动计算 explicit-cot vs implicit-cot 加速比。
+   - `visualize_all(out_dir, reports)` 主入口，失败不阻塞主流程（run_eval.py try/except 包裹）。
+
+7. **Phase D2：run_eval.py 接入 visualize**
+   - `src/eval/run_eval.py`：`run_eval` 末尾在写完 `metrics_table.md` 后调用 `visualize_all(out_dir, reports)`，异常仅 warning 不抛出。
+
+8. **Phase D3：修 llm_judge.py JSON 读取 + 接入 run_all.sh + 填充 bias stubs**
+   - `src/eval/llm_judge.py`：
+     - 新增 `_load_predictions(path)`：支持 `.json`（run_eval.py 输出）与 `.csv` 两种格式。原 `run_judge_eval` 用 `csv.DictReader` 读 JSON 文件必然失败，是评估流程的硬 bug。
+     - 新增 `_biased_first_rate(per_sample)`：用 "judge score>=7 但 model_label!=ref_label" 的样本占比近似位置偏差率（Zheng 2023 App F 简化版）。
+     - 新增 `_verbosity_bias_rate(per_sample)`：按 median cot_len 划分长短两组，归一化 mean score 差到 [0,1]。
+     - `run_judge_eval` 改名参数 `predictions_csv` -> `predictions_path`，调用 `_load_predictions`，bias 字段由 stub 0.0 改为真实计算。
+   - `scripts/run_all.sh`：新增 `judge` stage，遍历 `outputs/eval/predictions_*.json` 对每个 baseline 跑 LLM-as-judge；`all` 流程末尾追加 `run_judge`。
+
+### 开发中遇到的问题与解决方案
+- **问题：conda 安装 `bitsandbytes` 反复让 WSL 崩溃。**
+  - 原因：conda-forge 的 bitsandbytes 是 Python-only 包，不带 CUDA 后端 .so；尝试装 `cuda129_py310h93df00f_200` build 时 conda 解析 CUDA 依赖树异常复杂，触发 WSL 崩溃。
+  - 解决：彻底放弃 conda 装 bitsandbytes，整体改用 pip。PyPI 上的 `bitsandbytes==0.49.2` 官方 wheel 自带 CUDA 12.x 后端，安装简单且功能完整。AGENTS.md 已要求 pip 优先，本次重建贯彻到底。
+- **问题：pip-chill 默认输出过滤过激，把 torch/transformers 等显式安装的包也当依赖过滤掉。**
+  - 解决：用 `pip list --format=freeze` 取全量列表，手动按"核心 + 工具库"分类整理成 environment.yml 的 pip 段，固定所有版本。
+- **问题：`StudentModel.load` 无法加载 DPO checkpoint。**
+  - 原因：原实现 `model = cls(sft_cfg)` 会重新 `get_peft_model` 创建一个空 LoRA，再用 `model.classifier.load_state_dict` 装分类头；DPO adapter 权重从未被加载。
+  - 解决：重写 `load` 为"基座 + PeftModel.from_pretrained(ckpt_dir) + 分类头"三段式，SFT/DPO checkpoint 用同一入口加载。
+- **问题：`run_judge_eval` 用 csv.DictReader 读 JSON 文件。**
+  - 原因：`run_eval.py` 写 predictions 是 JSON，但 `llm_judge.py` 用 CSV reader 解析，必然得到空列表。
+  - 解决：新增 `_load_predictions` 支持两种格式，按文件后缀分发。
+
+### 代码实现要点
+- `make_sft_candidate_generator`：用 `do_sample=True` + 不同温度（0.3 / 1.0）生成 n 个候选，低温偏保守、高温偏多样，让 judge 真有可比性的两个候选可选出 chosen/rejected。
+- `StudentModel.load` 重写后是 SFT/DPO/未来 implicit-cot checkpoint 的统一加载入口；若 `adapter_config.json` 缺失则 warning 并用未微调基座，便于早期冒烟。
+- `visualize.py` 用 `matplotlib.use("Agg")` 强制无显示设备渲染，PNG 输出 150 dpi，混淆矩阵用 Blues colormap + 黑白自适应数字色。
+- `latency_table.md` 自动计算 explicit-cot vs implicit-cot 加速比，是论文工程价值论据的直接来源。
+- `llm_judge._biased_first_rate` / `_verbosity_bias_rate` 是 Zheng 2023 App F 偏差监控的启发式近似，正式版可外接更严格的 A/B 交换测试。
+
+### 测试结果
+- pytest: 13/13 passed (1.16s)，新环境 + 新代码全通过。
+- 模块 import：`src.eval.visualize` / `src.eval.llm_judge` / `src.data.preference` / `src.training.dpo` / `src.models.student` / `src.eval.run_eval` 全部 import 成功。
+- visualize 烟雾测试：mock 3 个 baseline × 50 条 predictions，渲染出 3 张混淆矩阵 PNG（676×529 RGBA）+ 1 张 TPR/FPR 柱状图 PNG（1034×657 RGBA）+ metrics_table.csv + latency_table.md，全部有效非空。
+
+### 性能优化（预留）
+- `visualize.py` 用 Agg backend，无 GUI 依赖，可在服务器无 X11 环境运行。
+- `run_eval.py` 调用 visualize 用 try/except 包裹，可视化失败不影响指标表输出（论文交付物优先级：指标 > 图表）。
+
+### 下一步
+- 在服务器上跑完整训练：`bash scripts/run_all.sh all`（haystack → synth → hardneg → pref → sft → dpo → implicit → blind → eval → judge）。
+- WildChat 草垛下载：`python -m scripts.prepare_haystack --n 5000`（需 HF token + 数据集权限；脚本就绪，用户机器跑不动训练暂缓）。
+- 论文图表：跑完 eval 后直接从 `outputs/eval/` 取混淆矩阵 PNG / metrics_table.csv / tpr_fpr_bars.png / latency_table.md 入稿。
+- 可选：Stepwise Internalization 阶段对 GPU 显存敏感，RTX 4060 8GB 可能溢出，建议租 RTX 4090 24GB 或 A6000 48GB。

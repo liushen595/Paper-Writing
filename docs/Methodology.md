@@ -40,7 +40,7 @@
    - `implicit_threat`：不含敏感词的隐式意图言论（正样本）。
    - `hard_negative`：话题相近、词汇相近但语境安全的对照言论（硬负样本）。
    - `thought_process`：显式 CoT 推理链 `[推理] A -> B -> C -> 结论`。
-   - `label` / `probability` / `category`。
+    - `label` / `probability` / `category`。其中 `probability` 为 Teacher 在造数时给出的弱参考置信，**不进入训练损失**（SFT 用 `label` 做 $\mathcal{L}_{cls}$、用 `thought_process+label` 文本做 $\mathcal{L}_{clm}$）；评估阶段判别阈值（>0.5）使用 Student 分类头输出的 sigmoid 概率，而非该字段。
 3. 按 80/20 切分 train/test，test 不参与任何训练。
 4. **质量保障**：免费 Teacher 弱于 GPT-4，造数产物须经人工抽检 + judge 一致性过滤才进入训练集。
 
@@ -48,7 +48,7 @@
 所有样本归入 隐式意图 (Implicit-Intent) > 显式意图 (Explicit-Intent) > 无意图 (No-Intent) 三档，档内视为等价，用于 DPO 偏好对的低分歧标注。
 
 ### 3.4 盲测集（Zero-Knowledge Test Set）
-- **草垛 (Haystack)**：`doj_non_criminal` + 合成 `hard_negatives` + 可选 HuggingFace non-toxic 评论。
+- **草垛 (Haystack)**：`data/synthesized/hard_negatives.jsonl`（synthesis 展开的安全对照言论）+ `data/haystack/wildchat_nontoxic.jsonl`（`allenai/WildChat-nontoxic` 英文子集 5000 条，由 `scripts/prepare_haystack.py` 采样）。原 `doj_non_criminal` 已弃用。
 - **针 (Needles)**：合成 test.jsonl 中的 `implicit_threat`，与训练集零重叠。
 - 随机种子混合，记录 source / ground-truth / 参考推理。
 
@@ -101,8 +101,10 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 2. **llama3-zeroshot**（通用生成式）：未微调 Llama-3-8B-Instruct 零样本。
 3. **explicit-cot**（消融）：Phase 1 显式 CoT 模型（未内化）。
 4. **sft-no-dpo**（消融）：Phase 1 后未经 Phase 2，验证 DPO 对 FPR 贡献。
-5. **roberta-large**（消融）：Phase 1 蒸馏源 Teacher 单独作判别基线。
+5. **dpo-only**（消融）：Phase 2 DPO 后 LoRA 权重 + SFT 分类头，验证 DPO 对 TPR/FPR 的边际贡献。
 6. **implicit-cot**（本方法）：Phase 3 内化模型。
+
+> 原 `roberta-large` baseline 已移除：本任务以 LLM 内化为主路线，RoBERTa 蒸馏源保留为 Phase 1 可选增强，不作单独 baseline。
 
 ### 6.2 量化指标矩阵
 - 硬阈值判定（prob > 0.5 即 Threat）。
