@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import time
@@ -94,10 +95,15 @@ def synthesize_one(client: BaseClient, record: DOJRecord, temperature: float = 0
     """合成单条数据。数据宝贵，最多重试 max_retries 次，每次失败后调整策略。"""
     msgs = _build_messages(record)
     for attempt in range(max_retries):
+        log.info(f"开始调用 Teacher (尝试 {attempt+1}/{max_retries}), url={record.url}")
+        start_time = time.time()
         try:
             raw = client.chat(msgs, temperature=temperature, max_tokens=2048)
+            elapsed = time.time() - start_time
+            log.info(f"Teacher 调用成功，耗时 {elapsed:.1f}s，响应长度 {len(raw)} 字符")
         except Exception as e:  # noqa: BLE001
-            log.error(f"Teacher 调用失败({attempt+1}/{max_retries}): {e}; url={record.url}")
+            elapsed = time.time() - start_time
+            log.error(f"Teacher 调用失败({attempt+1}/{max_retries}), 耗时 {elapsed:.1f}s: {e}; url={record.url}")
             time.sleep(2 ** min(attempt, 4))
             continue
         result = _parse_synthesis(raw, record)
@@ -138,19 +144,27 @@ def run_synthesis(
     client = build_client(provider_name=provider_name, model=model)
     log.info(f"使用 Teacher provider={client.provider.name}, model={client.model}")
 
-    results: list[dict] = []
     total_ok = 0
     for i, rec in enumerate(records):
+        log.info(f"处理进度 [{i+1}/{len(records)}]")
         synth = synthesize_one(client, rec)
         if synth is not None:
-            results.append(synth)
-        if (i + 1) % 50 == 0:
-            total_ok += len(results)
-            log.info(f"进度 {i+1}/{len(records)}, 已成功 {total_ok}")
-            _flush(results, train_path, test_path, data_cfg.train_ratio, data_cfg.seed, partial=True)
-    total_ok += len(results)
-    _flush(results, train_path, test_path, data_cfg.train_ratio, data_cfg.seed, partial=False)
+            total_ok += 1
+            _save_single(synth, train_path, test_path, data_cfg.train_ratio, data_cfg.seed)
+            log.info(f"成功合成并保存，当前累计成功 {total_ok} 条")
+        else:
+            log.warning(f"合成失败，url={rec.url}")
     log.info(f"合成完成: 共 {total_ok} 条 -> {train_path}(train) + {test_path}(test)")
+
+
+def _save_single(item: dict, train_path: Path, test_path: Path, train_ratio: float, seed: int) -> None:
+    """单条数据保存：根据 url 的确定性 hash 决定写入 train 还是 test。"""
+    url = item.get("source_url", "")
+    h = int(hashlib.md5(f"{url}:{seed}".encode()).hexdigest(), 16) % 10000
+    threshold = int(train_ratio * 10000)
+    target_path = train_path if h < threshold else test_path
+    with open(target_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 
 def _flush(results: list[dict], train_path: Path, test_path: Path, train_ratio: float, seed: int, partial: bool) -> None:

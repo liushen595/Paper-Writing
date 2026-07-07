@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
+from openai import OpenAI
 
 from ..utils.env import EnvConfig, LLMProviderConfig, load_env_config
 from ..utils.logging import get_logger
@@ -61,30 +62,79 @@ class OpenAICompatibleClient(BaseClient):
         return _stream_request(url, payload, headers, self.timeout)
 
 
+class AliyunClient(BaseClient):
+    """阿里云通义千问客户端：OpenAI SDK + 流式 + 结构化 JSON 输出。"""
+
+    name = "aliyun"
+
+    def __init__(self, provider: LLMProviderConfig, timeout: int = 180):
+        super().__init__(provider, timeout)
+        self._client = OpenAI(api_key=provider.api_key, base_url=provider.base_url)
+
+    def chat(self, messages: list[ChatMessage], temperature: float = 0.7, max_tokens: int = 2048, **kw) -> str:
+        completion = self._client.chat.completions.create(
+            model=self.model,
+            messages=[m.to_dict() for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            stream_options={"include_usage": True},
+            response_format={"type": "json_object"},
+            **kw,
+        )
+        chunks: list[str] = []
+        received_done = False
+        last_log_len = 0
+        for chunk in completion:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta and delta.content:
+                chunks.append(delta.content)
+            current_len = sum(len(c) for c in chunks)
+            if current_len - last_log_len >= 200:
+                log.debug(f"流式接收中... 已接收 {current_len} 字符")
+                last_log_len = current_len
+            if chunk.choices[0].finish_reason is not None:
+                received_done = True
+        if not received_done:
+            partial = "".join(chunks)
+            raise RuntimeError(f"流式响应被截断，已接收 {len(partial)} 字符")
+        return "".join(chunks)
+
+
 def _stream_request(url: str, payload: dict, headers: dict, timeout: int) -> str:
-    """流式请求：逐 chunk 接收，拼接完整响应。不会因响应过长而截断。"""
+    """流式请求：逐 chunk 接收，拼接完整响应。检测截断并抛异常以触发重试。"""
     resp = requests.post(url, json=payload, headers=headers, timeout=timeout, stream=True)
     resp.raise_for_status()
     chunks: list[str] = []
-    for line in resp.iter_lines(decode_unicode=True):
-        if not line:
-            continue
-        if not line.startswith("data: "):
-            continue
-        data = line[6:].strip()
-        if data == "[DONE]":
-            break
-        try:
-            obj = json.loads(data)
-            choices = obj.get("choices", [])
-            if not choices:
+    received_done = False
+    try:
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
                 continue
-            delta = choices[0].get("delta", {})
-            content = delta.get("content", "")
-            if content:
-                chunks.append(content)
-        except (json.JSONDecodeError, IndexError, KeyError):
-            continue
+            if not line.startswith("data: "):
+                continue
+            data = line[6:].strip()
+            if data == "[DONE]":
+                received_done = True
+                break
+            try:
+                obj = json.loads(data)
+                choices = obj.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+                content = delta.get("content", "")
+                if content:
+                    chunks.append(content)
+            except (json.JSONDecodeError, IndexError, KeyError):
+                continue
+    finally:
+        resp.close()
+    if not received_done:
+        partial = "".join(chunks)
+        raise RuntimeError(f"流式响应被截断（未收到 [DONE]），已接收 {len(partial)} 字符")
     return "".join(chunks)
 
 
@@ -117,6 +167,8 @@ def build_client(provider_name: Optional[str] = None, env: Optional[EnvConfig] =
         chosen = available[0]
     if model:
         chosen.model_name = model
+    if chosen.name == "aliyun":
+        return AliyunClient(chosen)
     return OpenAICompatibleClient(chosen)
 
 

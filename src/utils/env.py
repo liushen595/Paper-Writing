@@ -37,6 +37,7 @@ class LLMProviderConfig:
 class EnvConfig:
     glm: LLMProviderConfig
     agnes: LLMProviderConfig
+    aliyun: LLMProviderConfig
     openai: LLMProviderConfig
     hf_token: Optional[str]
     wandb_api_key: Optional[str]
@@ -45,7 +46,7 @@ class EnvConfig:
     raw_dir: Path
 
     def available_providers(self) -> list[LLMProviderConfig]:
-        return [p for p in (self.glm, self.agnes, self.openai) if p.enabled]
+        return [p for p in (self.glm, self.agnes, self.aliyun, self.openai) if p.enabled]
 
 
 def load_env_config() -> EnvConfig:
@@ -64,6 +65,12 @@ def load_env_config() -> EnvConfig:
             api_key=os.environ.get("AGNES_API_KEY", "").strip(),
             base_url=os.environ.get("AGNES_BASE_URL", "").strip(),
             model_name=os.environ.get("AGNES_MODEL_NAME", "agnes-2.0-flash").strip(),
+        ),
+        aliyun=LLMProviderConfig(
+            name="aliyun",
+            api_key=os.environ.get("DASHSCOPE_API_KEY", "").strip(),
+            base_url=os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").strip(),
+            model_name=os.environ.get("ALIYUN_MODEL_NAME", "qwen-plus").strip(),
         ),
         openai=LLMProviderConfig(
             name="openai",
