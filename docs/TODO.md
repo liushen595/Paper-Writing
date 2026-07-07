@@ -8,7 +8,7 @@
 - [x] Phase C DPO 接续（候选生成器替换 / cls head 保留 / dpo-only baseline）
 - [x] Phase D 评估可视化（混淆矩阵 PNG + CSV + 柱状图 + 延迟表 + judge JSON 修复）
 - [x] pytest 13/13 通过
-- [x] environment.yml 重写为 pip 段格式
+- [x] environment.yml 替换为 requirements.txt（pip freeze 导出，pip 直接可读）
 - [x] 代码已推送到 main 分支（commit f447d14）
 
 ## 服务器跑训练前必做（人工）
@@ -19,22 +19,11 @@
 git clone https://github.com/liushen595/Paper-Writing.git
 cd Paper-Writing
 
-# 按 environment.yml 重建环境（注意：必须用 pip，不要用 conda install 装包）
+# 按 requirements.txt 重建环境（注意：必须用 pip，不要用 conda install 装包）
 conda create -n ML python=3.10 -y
 conda activate ML
 # 一行装完（清华源，国内服务器加速；海外服务器去掉 -i 参数）
-pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  "torch==2.5.1" "torchvision==0.20.1" \
-  "transformers==4.44.1" "datasets==4.4.1" "peft==0.19.1" "trl==0.12.2" \
-  "accelerate==1.14.0" "bitsandbytes==0.49.2" "tokenizers==0.19.1" \
-  "huggingface-hub==0.34.4" "safetensors==0.7.0" "sentencepiece==0.2.0" \
-  "numpy==2.0.1" "pandas==2.3.3" "scipy==1.15.3" "scikit-learn==1.7.2" \
-  "matplotlib==3.10.6" "seaborn==0.13.2" "pyyaml==6.0.3" \
-  "requests==2.32.5" "openai==2.30.0" "python-dotenv==1.2.1" \
-  "tqdm==4.67.1" "pydantic==2.13.4" "rich==14.2.0" \
-  "jieba==0.42.1" "nltk==3.9.2" "timm==1.0.22" \
-  "rouge-score==0.1.2" "evaluate==0.4.6" "statsmodels==0.14.6" \
-  "pytest==9.0.3"
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 ```
 
 ### 2. HuggingFace 登录（必需，WildChat 是 gated dataset）
