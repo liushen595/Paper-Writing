@@ -13,7 +13,25 @@
 
 ## 服务器跑训练前必做（人工）
 
-### 1. 服务器环境准备
+### 1. 服务器环境准备（**推荐用 Docker，见 [docs/Docker.md](Docker.md)**）
+
+#### 方案 A：Docker（推荐，完美复刻本地环境）
+```bash
+# 本地构建并推送镜像（一次性，见 Docker.md）
+docker build -t paper-ml:latest .
+docker push <your-registry>/paper-ml:latest
+
+# 服务器拉取镜像 + clone 代码
+docker pull <your-registry>/paper-ml:latest
+git clone https://github.com/liushen595/Paper-Writing.git && cd Paper-Writing
+docker run --gpus all -it --rm --shm-size=16g \
+  -v $(pwd):/workspace -w /workspace \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -v ~/.config/huggingface:/root/.config/huggingface \
+  paper-ml:latest bash
+```
+
+#### 方案 B：手动 conda + pip（无 Docker 时）
 ```bash
 # clone 仓库
 git clone https://github.com/liushen595/Paper-Writing.git
@@ -24,6 +42,9 @@ conda create -n ML python=3.10 -y
 conda activate ML
 # 一行装完（清华源，国内服务器加速；海外服务器去掉 -i 参数）
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+
+# 验证依赖
+python scripts/check_imports.py
 ```
 
 ### 2. HuggingFace 登录（必需，WildChat 是 gated dataset）
