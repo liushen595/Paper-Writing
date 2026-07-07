@@ -26,7 +26,7 @@ class DataConfig:
 
 @dataclass
 class SFTConfig:
-    base_model: str = "meta-llama/Meta-Llama-3-8B-Instruct"
+    base_model: str = "Qwen/Qwen3-8B"
     lora_r: int = 64
     lora_alpha: int = 16
     lora_dropout: float = 0.05
@@ -78,7 +78,7 @@ class EvalConfig:
     blind_csv: str = "data/blind/test_blind.csv"
     threshold: float = 0.5
     baselines: list[str] = field(
-        default_factory=lambda: ["toxic-bert", "llama3-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
+        default_factory=lambda: ["toxic-bert", "qwen-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
     )
     judge_provider: str = "glm"
     judge_swap_positions: bool = True

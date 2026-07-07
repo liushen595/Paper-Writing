@@ -1,4 +1,4 @@
-"""Llama-3-8B-Instruct + QLoRA 学生模型加载，附 ToXCL 风格分类头。
+"""Qwen3-8B + QLoRA 学生模型加载，附 ToXCL 风格分类头。
 
 设计要点（基于 Plan §2.2 / ToXCL Hoang et al. 2024）：
 - 基座 4-bit NF4 量化 + LoRA 适配器（target=q_proj,v_proj）。

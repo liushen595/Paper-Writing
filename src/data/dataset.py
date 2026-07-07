@@ -15,7 +15,7 @@ from ..utils.seed import set_seed
 log = get_logger("dataset")
 
 
-# --- Prompt 模板（Llama-3-Instruct 格式） ---
+# --- Prompt 模板（Qwen3 ChatML 格式，apply_chat_template 自动处理） ---
 SYSTEM_PROMPT_SFT = (
     "You are a criminal-intent recognition assistant. Read the user's message and decide whether it "
     "expresses an implicit criminal intent. First reason step by step inside <thought>...</thought>, "

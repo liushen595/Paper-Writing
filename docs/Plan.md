@@ -22,7 +22,7 @@
 
 ## 二、方案：ThreatWeaver (端到端隐式推理架构)
 
-框架为基于 **Llama-3-8B** 或 **Qwen2.5-7B** 的本地端到端小语言模型（SLM），通过 **QLoRA (Quantized Low-Rank Adaptation)** 完成微调。
+框架为基于 **Qwen3-8B** 的本地端到端小语言模型（SLM），通过 **QLoRA (Quantized Low-Rank Adaptation)** 完成微调。
 
 ### 1. 核心 Idea: 隐式威胁的认知蒸馏与偏好对齐 (Cognitive Distillation & Preference Alignment)
 当前大多数模型属于“特征匹配器”，本项目旨在训练一个“逻辑溯因器”。通过构建包含**“正样本（隐式威胁）”**与**“硬负样本（安全但含敏感词的语境）”**的对比数据集，先让模型学会“如何推理”（SFT），再通过直接偏好优化（DPO, Direct Preference Optimization）让模型学会“拒绝过度敏感（降低误报）”。
@@ -47,7 +47,7 @@
     *   *三分类偏好方案 (引自 Wen et al. 2023):* 所有样本归入隐式意图 (Implicit-Intent) > 显式意图 (Explicit-Intent) > 无意图 (No-Intent) 三档，档内视为等价，用于后续 DPO 偏好对的低分歧标注。
 
 *   **Phase 1: 监督微调 (Supervised Fine-Tuning, SFT)**
-    *   *练什么:* 将基础大模型（`Meta-Llama-3-8B-Instruct`）转化为特定任务的"逻辑溯因器"，同时输出分类标签与显式思维链。
+    *   *练什么:* 将基础大模型（`Qwen/Qwen3-8B`）转化为特定任务的"逻辑溯因器"，同时输出分类标签与显式思维链。
     *   *怎么练:* 采用 **QLoRA (NF4 量化)** 冻结主干网络，仅训练 Attention 层的 $W_q, W_v$ 矩阵的 LoRA 适配器。**架构借鉴 ToXCL (Hoang et al., 2024)：在 LLM 最后隐藏层之上增加一个 mean-pool 分类头**，与因果语言建模 (CLM) 损失联合训练，避免纯生成式"标签+解释"拼接带来的误差传播：
         *   联合损失: $\mathcal{L} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{clm}$
         *   $\mathcal{L}_{cls}$: 二分类交叉熵（Threat/Safe），施加于 pooled hidden state。
@@ -68,11 +68,11 @@
         *   **三分类偏好方案:** 沿用 §2.1 的隐式 > 显式 > 无意图三档构造 chosen/rejected。
     *   *奖励整形 (引自 Wen et al. 2023):* 集成一个规则/关键词犯罪意图检测器 $P$，对偏好对做预过滤，避免裁判在明显样本上失真。
     *   *技术实现:* 使用 `DPOTrainer` 进行偏好对齐；**DPO $\beta$ 起始值取 0.1**（Wen et al. 2023 PPO 中 KL 系数的经验甜点），过小导致过度优化、过大导致保守。
-    *   *Judge 质量保障:* 免费 Teacher 弱于 GPT-4，必须做 **judge-human 一致性校验**（抽样 100 对人工核对），一致性低于 80% 则需回检 prompt 或人工补标。同时按 Zheng et al. (2023) App F，**微调一个开源 Llama-3-8B 三分类 judge（A/B/tie）**作为廉价可复用裁判，解决零样本开源裁判格式遵循差、一致性低的问题。
+    *   *Judge 质量保障:* 免费 Teacher 弱于 GPT-4，必须做 **judge-human 一致性校验**（抽样 100 对人工核对），一致性低于 80% 则需回检 prompt 或人工补标。同时按 Zheng et al. (2023) App F，**微调一个开源 Qwen3-8B 三分类 judge（A/B/tie）**作为廉价可复用裁判，解决零样本开源裁判格式遵循差、一致性低的问题。
 
 *   **Phase 3: 隐式思维链内化 (Implicit CoT via Stepwise Internalization)**
     *   *主方法:* 采用 **Deng et al. (2024) 的 Stepwise Internalization**。从 Phase 1 训练好的显式 CoT 模型出发，按**线性调度**逐步移除中间 CoT token 并继续微调，强制模型将逻辑推导压缩进 Transformer MLP 的隐状态：
-        *   移除调度: $s(t) = \left\lfloor \Delta \frac{t}{T} \right\rfloor$，其中 $T$ 为每个 epoch 的步数，$\Delta$ 控制每 epoch 移除的 token 数（Llama-3-8B 起始取 $\Delta = 8$，过大会不收敛）。
+        *   移除调度: $s(t) = \left\lfloor \Delta \frac{t}{T} \right\rfloor$，其中 $T$ 为每个 epoch 的步数，$\Delta$ 控制每 epoch 移除的 token 数（Qwen3-8B 起始取 $\Delta = 8$，过大会不收敛）。
         *   损失: $\min_\theta -\log P_\theta(y, z_{1+\min(s(t),m):m} \mid x)$，随 $s(t)$ 增大逐步丢失 CoT 前缀。
     *   *稳定性三件套 (Deng et al. 2024 消融验证):*
         1.  **Removal Smoothing:** 给移除数加随机偏移 $s(t)^* = s(t) + o,\; P(o) \propto \exp(-\lambda o)$，取 $\lambda = 4$（98% 概率 $o=0$，2% 多移除），平滑阶段过渡。
@@ -93,7 +93,7 @@
 
 *   **评估基线 (Baselines):**
     * **Baseline 1 (判别式模型):** 部署预训练的 `unitary/toxic-bert`，统计其在隐式语境下的漏报情况。
-    * **Baseline 2 (通用生成式):** 使用完全未经微调的 `Llama-3-8B-Instruct`（或其他本地小模型），采用 Zero-shot Prompting，评估其原始推理能力。
+    * **Baseline 2 (通用生成式):** 使用完全未经微调的 `Qwen3-8B`，采用 Zero-shot Prompting，评估其原始推理能力。
     * **Baseline 3 (Ablation - 显式模型):** 使用我们在 Phase 1 训练完成的，未进行思维链内化的显式 CoT 模型。
     * **Baseline 4 (Ablation - 无 DPO):** 使用 Phase 1 SFT 后、未经 Phase 2 DPO 的模型，验证 DPO 对 FPR 的贡献。
     * **Baseline 5 (Ablation - 仅 DPO):** 使用 Phase 2 DPO 后的 LoRA 权重 + SFT 分类头，验证 DPO 在 SFT 基础上对隐式意图识别的边际贡献（与 Baseline 4 对照，量化 DPO 对 TPR/FPR 的双向影响）。
@@ -113,7 +113,7 @@
     * **一致性指标 (S1/S2):** S1 把 tie + 不一致都算 tie；S2 仅在非 tie 样本上计算一致率。报告 judge-human 一致性，目标 S2 >= 80%。
     * **ToXCL 自定义解释评估 (Hoang et al. 2024 Alg.1):** 对解释输出采用"匹配则计指标、不匹配罚 0、双方均 `[None]` 加分"的算法，惩罚多余解释。
     * **偏差监控:** 报告位置偏差（biased-first 率）、冗长偏差、自我增强偏差（避免同族模型既当系统又当裁判）。
-    * **开源微调 judge:** 按 Zheng et al. (2023) App F，微调 Llama-3-8B 三分类 judge 作为可复用评估器，统计一致性 16% -> 65%、格式错误 -> 0% 的提升。
+    * **开源微调 judge:** 按 Zheng et al. (2023) App F，微调 Qwen3-8B 三分类 judge 作为可复用评估器，统计一致性 16% -> 65%、格式错误 -> 0% 的提升。
 
 ### 4. 成果转化与论文映射 (Course Deliverables，暂时不写，要先写代码)
 

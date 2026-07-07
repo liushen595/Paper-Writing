@@ -1,6 +1,6 @@
 # ThreatWeaver — 隐式犯罪意图识别框架
 
-基于 **Llama-3-8B-Instruct + QLoRA** 的端到端小语言模型，通过 **SFT → DPO → 隐式思维链内化（Stepwise Internalization）** 三阶段训练，识别互联网中不含敏感词的隐式犯罪意图。
+基于 **Qwen3-8B + QLoRA** 的端到端小语言模型，通过 **SFT → DPO → 隐式思维链内化（Stepwise Internalization）** 三阶段训练，识别互联网中不含敏感词的隐式犯罪意图。
 
 ## 目录结构
 
@@ -44,7 +44,7 @@ Paper-Writing/
 │   │   └── blind_set.py      # 盲测集组装（haystack + needles → test_blind.csv）
 │   │
 │   ├── models/               # 模型定义
-│   │   ├── student.py        # Llama-3-8B + QLoRA + ToXCL 分类头
+│   │   ├── student.py        # Qwen3-8B + QLoRA + ToXCL 分类头
 │   │   ├── classifier_head.py # RoBERTa Teacher 分类头（蒸馏源）
 │   │   └── judge.py          # 开源微调 Judge（三分类 A/B/tie + S1/S2 一致性）
 │   │
@@ -56,7 +56,7 @@ Paper-Writing/
 │   │
 │   └── eval/                 # 评估
 │       ├── metrics.py        # 量化指标（FPR/TPR/F1/混淆矩阵/延迟）
-│       ├── baselines.py      # 5 个评估基线（toxic-bert / llama3-zeroshot / explicit-cot / sft-no-dpo / implicit-cot）
+│       ├── baselines.py      # 6 个评估基线（toxic-bert / qwen-zeroshot / explicit-cot / sft-no-dpo / dpo-only / implicit-cot）
 │       ├── llm_judge.py      # LLM-as-Judge 质量评估（ToXCL Alg.1 + S1/S2 + 偏差监控）
 │       └── run_eval.py       # 评估主入口
 │
@@ -147,7 +147,7 @@ python -m scripts.run_synthesis --provider agnes --overwrite
 **输出**：`checkpoints/sft/`（LoRA adapter + 分类头权重）
 
 **架构创新（ToXCL 风格）**：
-- 基座：`Meta-Llama-3-8B-Instruct` + QLoRA（4-bit NF4 + LoRA r=64）
+- 基座：`Qwen/Qwen3-8B` + QLoRA（4-bit NF4 + LoRA r=64）
 - 在最后隐藏层之上加 **mean-pool 分类头**（二分类 Threat/Safe）
 - 联合损失：`α·L_cls + β·L_clm`
   - `L_cls`：pooled hidden state 上的交叉熵
@@ -220,7 +220,7 @@ python -m scripts.run_judge_eval --predictions outputs/eval/predictions_explicit
 
 **评估基线**：
 1. `toxic-bert`：判别式模型，统计隐式漏报
-2. `llama3-zeroshot`：未微调 Llama-3-8B-Instruct 零样本
+2. `qwen-zeroshot`：未微调 Qwen3-8B 零样本
 3. `explicit-cot`：Phase 1 显式 CoT 模型（消融）
 4. `sft-no-dpo`：未经 DPO 的模型（消融 DPO 贡献）
 5. `implicit-cot`：Phase 3 内化模型（本方法）

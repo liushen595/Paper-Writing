@@ -1,6 +1,6 @@
 """Phase 1 SFT 数据整理：把 TrainExample 转成 tokenized 的 input_ids / labels_clm / labels_cls。
 
-Llama-3-Instruct chat template:
+Qwen3 ChatML template (apply_chat_template 自动处理, enable_thinking=True 默认):
   <|system|>SYSTEM_PROMPT_SFT<|end|>
   <|user|>INSTRUCTION<|end|>
   <|assistant|><thought>thought</thought>\n[Category: X]\nLabel<|end|>

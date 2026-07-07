@@ -1,4 +1,4 @@
-"""开源微调 Judge（Zheng et al. 2023 App F）：Llama-3-8B 三分类序列分类器 (A/B/tie)。
+"""开源微调 Judge（Zheng et al. 2023 App F）：Qwen3-8B 三分类序列分类器 (A/B/tie)。
 
 用于：
 1. 廉价可复用偏好对标注（替代付费 LLM judge）。
@@ -42,7 +42,7 @@ Output exactly one of: A, B, tie. Then a one-line reason."""
 
 
 class OpenJudge(nn.Module):
-    """在 Llama-3-8B 之上加 sequence classification 头（3 类）。"""
+    """在 Qwen3-8B 之上加 sequence classification 头（3 类）。"""
 
     def __init__(self, base_model: str, num_labels: int = 3):
         super().__init__()

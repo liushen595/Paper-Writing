@@ -14,7 +14,7 @@ data:
   haystack_size: 5000                                     # 草垛采样条数（FPR 分母）
 
 sft:
-  base_model: "meta-llama/Meta-Llama-3-8B-Instruct"
+  base_model: "Qwen/Qwen3-8B"
   lora_r: 16           # RTX 4060: 16; 服务器: 64
   lora_alpha: 32
   lora_dropout: 0.05
@@ -59,7 +59,7 @@ implicit_cot:
 eval:
   blind_csv: "data/blind/test_blind.csv"
   threshold: 0.5
-  baselines: ["toxic-bert", "llama3-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
+  baselines: ["toxic-bert", "qwen-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
   judge_provider: "agnes"
   judge_swap_positions: true
   judge_reference_guided: true

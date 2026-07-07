@@ -11,7 +11,7 @@
 现有检测模型（如 `unitary/toxic-bert`、Perspective API）依赖词法特征，对**隐式、不含敏感词**的有害文本漏报严重。Wen et al. (2023) 实证：GPT-3.5 零样本对 5 个主流分类器的攻击成功率达 58–96%。
 
 ### 1.3 研究目标
-训练一个**本地端到端小语言模型（SLM, Llama-3-8B-Instruct）**，使其：
+训练一个**本地端到端小语言模型（SLM, Qwen3-8B）**，使其：
 1. 通过**显式思维链（Explicit CoT）**学会对隐式意图的逻辑溯因；
 2. 通过**直接偏好优化（DPO）**学会在模棱两可言论上保持克制（降低误报 FPR）；
 3. 通过**隐式思维链内化（Implicit CoT via Stepwise Internalization）**将推理过程压缩进隐状态，推理阶段不输出中间 token，大幅降低延迟。
@@ -55,7 +55,7 @@
 ## 4. 模型架构
 
 ### 4.1 基座
-`meta-llama/Meta-Llama-3-8B-Instruct` + **QLoRA**（4-bit NF4 量化 + LoRA 适配器，target=q_proj,v_proj，r=64，α=16）。
+`Qwen/Qwen3-8B` + **QLoRA**（4-bit NF4 量化 + LoRA 适配器，target=q_proj,v_proj，r=64，α=16）。
 
 ### 4.2 ToXCL 风格分类头（Phase 1 创新）
 在 LLM 最后隐藏层之上加 **mean-pool 分类头**（二分类 Threat/Safe），与 CLM 损失联合训练：
@@ -82,7 +82,7 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
   - **三分类偏好方案**：chosen 为更严谨推理，rejected 为更草率判别。
   - **规则检测器奖励整形**：集成关键词检测器预过滤（Wen et al. 2023 的 `R = R_θ − α·P`）。
 - DPO β 起始 **0.1**（Wen et al. 2023 PPO 的 KL 系数经验甜点）。
-- **Judge 质量保障**：judge-human 一致性校验（抽样 100 对，目标 S2≥80%）；按 Zheng 2023 App F 微调开源 Llama-3-8B 三分类 judge 作廉价补充。
+- **Judge 质量保障**：judge-human 一致性校验（抽样 100 对，目标 S2≥80%）；按 Zheng 2023 App F 微调开源 Qwen3-8B 三分类 judge 作廉价补充。
 
 ### 5.3 Phase 3: 隐式 CoT 内化（Stepwise Internalization, Deng et al. 2024）
 - **主方法**：从 Phase 1 显式 CoT 模型出发，按线性调度逐步移除 thought token 并微调：
@@ -98,7 +98,7 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 
 ### 6.1 Baselines
 1. **toxic-bert**（判别式）：`unitary/toxic-bert`，统计隐式漏报。
-2. **llama3-zeroshot**（通用生成式）：未微调 Llama-3-8B-Instruct 零样本。
+2. **qwen-zeroshot**（通用生成式）：未微调 Qwen3-8B 零样本。
 3. **explicit-cot**（消融）：Phase 1 显式 CoT 模型（未内化）。
 4. **sft-no-dpo**（消融）：Phase 1 后未经 Phase 2，验证 DPO 对 FPR 贡献。
 5. **dpo-only**（消融）：Phase 2 DPO 后 LoRA 权重 + SFT 分类头，验证 DPO 对 TPR/FPR 的边际贡献。
@@ -118,7 +118,7 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 - **S1/S2 一致性**（Zheng et al. 2023）：S1 把 tie+不一致算 tie；S2 仅非 tie 样本。目标 S2≥80%。
 - **ToXCL 自定义解释评估**（Hoang et al. 2024 Alg.1）：双方均 `[None]` 加分，不匹配罚 0，匹配计 token-F1（正式版外接 BLEU/ROUGE/BERTScore）。
 - **偏差监控**：位置偏差（biased-first 率）、冗长偏差、自我增强偏差（避免同族模型既当系统又当裁判）。
-- **开源微调 judge**：微调 Llama-3-8B 三分类 judge，统计一致性 16%→65%、格式错误→0% 的提升。
+- **开源微调 judge**：微调 Qwen3-8B 三分类 judge，统计一致性 16%→65%、格式错误→0% 的提升。
 
 ## 7. 结果解释框架（待实验后填充）
 - 表 1：盲测 TPR/FPR/F1 对比（预期本方法碾压 toxic-bert）。

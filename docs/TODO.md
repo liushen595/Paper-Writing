@@ -44,7 +44,8 @@ conda run -n ML huggingface-cli login
 ```
 并在浏览器申请以下数据集权限（通常几小时内通过）：
 - https://huggingface.co/datasets/allenai/WildChat-nontoxic （草垛）
-- https://huggingface.co/models/meta-llama/Meta-Llama-3-8B-Instruct （基座模型，Llama 系列通常需申请）
+
+> 基座模型 `Qwen/Qwen3-8B` 是 Apache 2.0 开源，**无需申请**（Meta Llama 系列需申请且被拒过，故改用 Qwen3）。
 
 ### 3. 配置 `.env`（LLM API key，用于造数 + judge）
 ```bash
@@ -145,7 +146,7 @@ bash scripts/run_all.sh all 2>&1 | tee outputs/run_all.log
 1. **synth 阶段 API 速率**：1005 条 DOJ 造数受 LLM API 速率限制，若用 GLM 免费档可能 3-5 小时。可加 `--limit 50` 先冒烟。
 2. **pref 阶段 judge 成本**：1005 条 × 2 次位置交换 = 2010 次 judge API 调用，免费 Teacher 质量弱，注意位置偏差。
 3. **implicit 阶段显存**：Stepwise Internalization 多轮重训，RTX 4060 8GB 必溢出；服务器 24GB+ 才稳。
-4. **Llama-3 权限**：`meta-llama/Meta-Llama-3-8B-Instruct` 也是 gated，记得申请。
+4. **Qwen3 权限**：`Qwen/Qwen3-8B` 开源 Apache 2.0，无需申请（已规避 Meta Llama 申请被拒问题）。
 5. **数据集 download 缓存**：HF datasets 默认缓存到 `~/.cache/huggingface`，跑完后可清理（`rm -rf ~/.cache/huggingface/datasets/allenai_wildchat*`）。
 
 ## 论文写作待办（代码跑通后）

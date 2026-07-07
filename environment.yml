@@ -26,9 +26,9 @@ dependencies:
       - bitsandbytes==0.49.2        # 4-bit QLoRA, CUDA 后端
       - accelerate==1.14.0
       - peft==0.19.1
-      - trl==0.12.2
-      - transformers==4.44.1
-      - tokenizers==0.19.1
+      - trl==0.18.1
+      - transformers==4.52.4
+      - tokenizers==0.21.4
       - huggingface-hub==0.34.4
       - safetensors==0.7.0
       - sentencepiece==0.2.0

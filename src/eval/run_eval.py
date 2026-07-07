@@ -88,11 +88,11 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None) 
 
 
 def _build_baseline(name: str, cfg: ExperimentConfig) -> Baseline:
-    from .baselines import Llama3ZeroShotBaseline, StudentBaseline, ToxicBertBaseline
+    from .baselines import QwenZeroShotBaseline, StudentBaseline, ToxicBertBaseline
     if name == "toxic-bert":
         return ToxicBertBaseline()
-    if name == "llama3-zeroshot":
-        return Llama3ZeroShotBaseline(model_name=cfg.sft.base_model.replace("-Instruct", "-Instruct"))
+    if name == "qwen-zeroshot":
+        return QwenZeroShotBaseline(model_name=cfg.sft.base_model)
     if name in ("explicit-cot", "sft-no-dpo", "implicit-cot", "dpo-only"):
         ckpt_map = {
             "explicit-cot": cfg.sft.output_dir,

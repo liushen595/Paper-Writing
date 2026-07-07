@@ -1,4 +1,4 @@
-"""评估基线：toxic-bert / llama3-zeroshot / explicit-cot / sft-no-dpo / dpo-only / implicit-cot。
+"""评估基线：toxic-bert / qwen-zeroshot / explicit-cot / sft-no-dpo / dpo-only / implicit-cot。
 
 每个 baseline 暴露 predict(text) -> (label, prob, cot?) 的统一接口。
 """
@@ -59,12 +59,12 @@ class ToxicBertBaseline(Baseline):
         return Prediction(label="Threat" if prob > 0.5 else "Safe", prob=prob, latency_ms=ms)
 
 
-class Llama3ZeroShotBaseline(Baseline):
-    """未微调 Llama-3-8B-Instruct 零样本提示。"""
+class QwenZeroShotBaseline(Baseline):
+    """未微调 Qwen3-8B 零样本提示（默认 thinking 模式）。"""
 
-    name = "llama3-zeroshot"
+    name = "qwen-zeroshot"
 
-    def __init__(self, model_name: str = "meta-llama/Meta-Llama-3-8B-Instruct"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-8B"):
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         import torch
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
