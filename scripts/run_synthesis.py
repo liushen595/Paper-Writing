@@ -2,9 +2,11 @@
 
 用法:
     python -m scripts.run_synthesis --provider glm --model glm-4-flash --limit 200
+    python -m scripts.run_synthesis --provider glm --model glm-4-flash --append  # 追加模式
 
 注意：运行前请先复制 .env.example 为 .env 并填入 API_KEY 与 BASE_URL。
 本脚本只造数，不做训练。
+合成完成后自动提取硬负样本到 hard_negatives.jsonl。
 """
 from __future__ import annotations
 
@@ -22,7 +24,8 @@ def main():
     ap.add_argument("--provider", default=None, help="glm/agnes/openai; 留空取 .env 中首个可用")
     ap.add_argument("--model", default=None, help="覆盖默认 teacher 模型名")
     ap.add_argument("--limit", type=int, default=None, help="只处理前 N 条 DOJ 记录（调试用）")
-    ap.add_argument("--overwrite", action="store_true", help="覆盖已有 train/test.jsonl")
+    ap.add_argument("--overwrite", action="store_true", help="覆盖已有 train/test.jsonl（清空重写）")
+    ap.add_argument("--append", action="store_true", help="追加模式：不清空已有文件，新数据追加到末尾")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -30,7 +33,7 @@ def main():
     log.info("=== Phase 0 数据合成 ===")
     run_synthesis(
         data_cfg=cfg.data, provider_name=args.provider, model=args.model,
-        limit=args.limit, overwrite=args.overwrite,
+        limit=args.limit, overwrite=args.overwrite, append=args.append,
     )
 
 

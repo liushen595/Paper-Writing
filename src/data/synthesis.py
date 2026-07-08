@@ -123,19 +123,24 @@ def run_synthesis(
     model: Optional[str] = None,
     limit: Optional[int] = None,
     overwrite: bool = False,
+    append: bool = False,
 ) -> None:
     set_seed(data_cfg.seed)
     out_dir = (PROJECT_ROOT / data_cfg.synthesized_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     train_path = out_dir / "train.jsonl"
     test_path = out_dir / "test.jsonl"
-    if train_path.exists() and not overwrite:
+
+    if append:
+        # 追加模式：不清空已有文件，直接追加新数据
+        log.info(f"追加模式：新数据将追加到已有 train/test.jsonl 末尾")
+    elif train_path.exists() and not overwrite:
         log.warning(f"{train_path} 已存在且 overwrite=False，跳过；删除该文件或设置 overwrite=True 重跑")
         return
-
-    # 首次运行时清空输出文件
-    train_path.unlink(missing_ok=True)
-    test_path.unlink(missing_ok=True)
+    else:
+        # 覆盖模式：首次运行时清空输出文件
+        train_path.unlink(missing_ok=True)
+        test_path.unlink(missing_ok=True)
 
     criminal_path = (PROJECT_ROOT / data_cfg.raw_criminal).resolve()
     records = load_doj_records(criminal_path, limit=limit)
@@ -155,6 +160,11 @@ def run_synthesis(
         else:
             log.warning(f"合成失败，url={rec.url}")
     log.info(f"合成完成: 共 {total_ok} 条 -> {train_path}(train) + {test_path}(test)")
+
+    # 自动提取硬负样本到 hard_negatives.jsonl
+    log.info("自动提取硬负样本...")
+    from .hard_negatives import merge_hard_negatives
+    merge_hard_negatives(data_cfg)
 
 
 def _save_single(item: dict, train_path: Path, test_path: Path, train_ratio: float, seed: int) -> None:

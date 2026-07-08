@@ -5,7 +5,8 @@ DOJ Press Release 犯罪类稿件筛选器
 基于标题+摘要的关键词规则，从全量新闻稿中筛选出涉及刑事犯罪的稿件。
 
 用法:
-    python filter_criminal.py
+    python filter_criminal.py              # 覆盖模式（默认，清空旧结果重写）
+    python filter_criminal.py --append     # 追加模式（不清空，新结果追加到已有文件末尾）
 
 输入:  output/doj_press_releases.jsonl
 输出:  output/doj_criminal.jsonl      (犯罪类)
@@ -16,6 +17,7 @@ import json
 import os
 import re
 import sys
+import argparse
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -316,6 +318,10 @@ def classify(title: str, summary: str, body: str = "") -> ClassifyResult:
 # ═══════════════════════════════════════════════════════════════════
 
 def main():
+    parser = argparse.ArgumentParser(description="DOJ Press Release 犯罪类筛选")
+    parser.add_argument("--append", action="store_true", help="追加模式：不清空已有输出文件，新结果追加到末尾")
+    args = parser.parse_args()
+
     if not os.path.exists(INPUT_FILE):
         print(f"❌ 输入文件不存在: {INPUT_FILE}")
         sys.exit(1)
@@ -326,9 +332,14 @@ def main():
     overridden_count = 0
     borderline: List[dict] = []  # 边界案例（同时命中犯罪+排除信号）
 
+    # 追加模式用 "a"，覆盖模式用 "w"
+    file_mode = "a" if args.append else "w"
+    if args.append:
+        print("📎 追加模式：新结果将追加到已有输出文件末尾")
+
     with open(INPUT_FILE, "r", encoding="utf-8") as fin, \
-         open(CRIMINAL_OUT, "w", encoding="utf-8") as f_crim, \
-         open(NON_CRIMINAL_OUT, "w", encoding="utf-8") as f_noncrim:
+         open(CRIMINAL_OUT, file_mode, encoding="utf-8") as f_crim, \
+         open(NON_CRIMINAL_OUT, file_mode, encoding="utf-8") as f_noncrim:
 
         for line in fin:
             line = line.strip()
