@@ -70,7 +70,8 @@ class StudentModel(nn.Module):
         self.base = get_peft_model(base, lora_cfg)
         self.hidden_size = base.config.hidden_size
         self.classifier = ClassifierHead(self.hidden_size)
-        self.classifier.to(base.dtype)
+        device = next(base.parameters()).device
+        self.classifier.to(device=device, dtype=base.dtype)
         log.info(f"Student 模型就绪: hidden_size={self.hidden_size}, LoRA r={sft_cfg.lora_r}")
 
     def forward(
@@ -137,7 +138,8 @@ class StudentModel(nn.Module):
         obj.base = model
         obj.hidden_size = base.config.hidden_size
         obj.classifier = ClassifierHead(obj.hidden_size)
-        obj.classifier.to(base.dtype)
+        device = next(model.parameters()).device
+        obj.classifier.to(device=device, dtype=base.dtype)
         cls_head_path = ckpt_dir / "classifier_head.pt"
         if cls_head_path.exists():
             state = torch.load(cls_head_path, map_location="cpu")
