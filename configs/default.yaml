@@ -15,7 +15,7 @@ data:
 
 sft:
   base_model: "Qwen/Qwen3-8B"
-  lora_r: 16           # RTX 4060: 16; 服务器: 64
+  lora_r: 64           # RTX 4060: 16; 服务器: 64
   lora_alpha: 32
   lora_dropout: 0.05
   target_modules: ["q_proj", "v_proj"]
@@ -27,20 +27,20 @@ sft:
   use_roberta_distill: false
   learning_rate: 2.0e-4
   num_epochs: 3
-  per_device_batch_size: 1      # RTX 4060: 1; 服务器: 4
-  gradient_accumulation_steps: 16 # RTX 4060: 16 (等效 batch=16); 服务器: 4
+  per_device_batch_size: 4      # RTX 4060: 1; 服务器: 4
+  gradient_accumulation_steps: 4 # RTX 4060: 16 (等效 batch=16); 服务器: 4
   warmup_ratio: 0.03
-  max_seq_len: 512               # RTX 4060: 512; 服务器: 1024
+  max_seq_len: 1024               # RTX 4060: 512; 服务器: 1024
   output_dir: "checkpoints/sft"
 
 dpo:
   beta: 0.1
   learning_rate: 5.0e-7
   num_epochs: 1
-  per_device_batch_size: 1       # RTX 4060: 1; 服务器: 2
-  gradient_accumulation_steps: 16 # RTX 4060: 16; 服务器: 8
+  per_device_batch_size: 2       # RTX 4060: 1; 服务器: 2
+  gradient_accumulation_steps: 8 # RTX 4060: 16; 服务器: 8
   max_prompt_len: 256
-  max_length: 512                # RTX 4060: 512; 服务器: 1024
+  max_length: 1024                # RTX 4060: 512; 服务器: 1024
   output_dir: "checkpoints/dpo"
 
 implicit_cot:
@@ -51,9 +51,9 @@ implicit_cot:
   left_removal: true
   learning_rate: 1.0e-5
   num_epochs: 20
-  per_device_batch_size: 1       # RTX 4060: 1; 服务器: 4
-  gradient_accumulation_steps: 16 # RTX 4060: 16; 服务器: 4
-  max_seq_len: 512               # RTX 4060: 512; 服务器: 1024
+  per_device_batch_size: 4       # RTX 4060: 1; 服务器: 4
+  gradient_accumulation_steps: 4 # RTX 4060: 16; 服务器: 4
+  max_seq_len: 1024               # RTX 4060: 512; 服务器: 1024
   output_dir: "checkpoints/implicit_cot"
 
 eval:
