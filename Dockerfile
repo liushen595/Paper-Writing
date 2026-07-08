@@ -16,7 +16,6 @@
 #
 # 镜像不含代码，代码在服务器上 git clone 后挂载进容器（/workspace）
 # HF 缓存挂载到宿主机 ~/.cache/huggingface，避免重复下载模型
-
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -26,22 +25,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HUB_ENABLE_HF_TRANSFER=1
 
 # 清华源（国内服务器加速；海外服务器把下面两行注释掉，或换成 https://pypi.org/simple）
-RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
- && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
+# RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+#  && pip config set global.trusted-host pypi.tuna.tsinghua.edu.cn
 
 # 系统依赖：Python 3.10 + 常用构建工具
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common \
-        curl \
-        ca-certificates \
-        git \
-        vim \
+    software-properties-common \
+    curl \
+    ca-certificates \
+    git \
+    vim \
     && add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y --no-install-recommends \
-        python3.10 \
-        python3.10-venv \
-        python3.10-dev \
-        python3-pip \
+    python3.10 \
+    python3.10-venv \
+    python3.10-dev \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/* \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
     && update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
@@ -51,13 +50,13 @@ RUN python -m pip install --upgrade pip
 
 # 安装 Python 依赖（单独一层，requirements.txt 改动才重建）
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 验证关键依赖能 import + CUDA 可用
 RUN python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())" \
- && python -c "import bitsandbytes as bnb; print('bitsandbytes', bnb.__version__)" \
- && python -c "import transformers, peft, trl, datasets, accelerate; print('transformers', transformers.__version__, 'peft', peft.__version__, 'trl', trl.__version__)" \
- && python -c "import matplotlib; matplotlib.use('Agg'); print('matplotlib OK')"
+    && python -c "import bitsandbytes as bnb; print('bitsandbytes', bnb.__version__)" \
+    && python -c "import transformers, peft, trl, datasets, accelerate; print('transformers', transformers.__version__, 'peft', peft.__version__, 'trl', trl.__version__)" \
+    && python -c "import matplotlib; matplotlib.use('Agg'); print('matplotlib OK')"
 
 WORKDIR /workspace
 

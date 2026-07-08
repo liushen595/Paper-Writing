@@ -47,11 +47,11 @@ env/
 .github/
 
 # ====================================================================
-# 数据（源数据 crawler/output/*.jsonl 保留入库；生成数据与中间产物排除）
+# 数据（源数据 crawler/output/*.jsonl 保留入库；生成数据入仓共享，备份排除）
 # ====================================================================
 crawler/output/crawl.log
 crawler/output/crawl_checkpoint/
-data/synthesized/
+data/synthesized/*.bak
 data/preference/
 data/blind/
 data/cache/
