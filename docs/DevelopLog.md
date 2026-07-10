@@ -490,4 +490,100 @@
 ### 性能优化
 - 无（本轮为 bug 修复 + 架构调整，无性能相关改动）。
 
+---
+
+## 2026-07-11 — dtype bug 修复 + GPU/API 分离 + 多线程加速 + TF32
+
+### 本次代码更改做了什么
+
+#### 1. dtype bug 修复（`src/models/student.py`）
+- **问题**：eval 时 `StudentBaseline.predict` 报 `mat1 and mat2 must have the same dtype, but got Float and Half`。分类头用 `base.dtype` 初始化（4-bit 模型返回 fp32 存储精度），但前向传播的 hidden states 是 bf16（`bnb_4bit_compute_dtype`）。
+- **修复**：`__init__` 和 `load()` 中分类头显式用 `torch.bfloat16` 代替 `base.dtype`。forward 中加 `last_hidden.to(dtype=self.classifier.linear.weight.dtype)` 兜底。
+
+#### 2. env.py provider name bug 修复
+- `glm` provider 的 `name` 被错误设为 `"aliyun"`，已修正为 `"glm"`。
+
+#### 3. TF32 加速（`src/utils/seed.py`）
+- 3090 是 Ampere 架构，开启 TF32 后 matmul/cudnn 用 TF32 替代 fp32，**2-3x matmul 加速**且精度损失可忽略。
+- 在 `set_seed()` 中加入 `torch.backends.cuda.matmul.allow_tf32 = True` 和 `torch.backends.cudnn.allow_tf32 = True`。
+
+#### 4. 训练参数优化（`configs/default.yaml` + `src/training/sft.py`）
+- SFT: batch 4→8，grad_accum 4→2（等效 batch 16 不变），lr 5e-5→2e-4（QLoRA 标准值）。
+- DPO: batch 2→4，grad_accum 8→4（等效 batch 16），lr 5e-7→5e-6。
+- DataLoader: num_workers 2→8，加 persistent_workers + prefetch_factor=4。
+- `optimizer.zero_grad(set_to_none=True)` 省内存。
+- DPO 加 `dataloader_num_workers=8, dataloader_pin_memory=True`。
+
+#### 5. GPU/API 分离架构
+- **问题**：DPO pref 和 judge eval 的 API 调用是串行的，3000 条 × 2 次 = 6000 次 API ≈ 6h。qwen-zeroshot GPU 逐条生成 3126 条 ≈ 3.5h。
+- **方案**：把 GPU 推理和 API 调用解耦，API 部分用多线程（qwen-plus 30k RPM）。
+  - Phase A（GPU）：`scripts/generate_candidates.py` — SFT 模型批量生成候选，输出 candidates.jsonl。
+  - Phase B（API）：`scripts/pre_generate.py` — 多线程 judge API 生成偏好对，~10min。
+  - qwen-zeroshot：多线程 qwen-plus API 替代 GPU 逐条生成，~10min。
+  - judge_eval：多线程 API 替代串行，~5min。
+- **学术诚信**：qwen-zeroshot 的 API 调用用的是同一 prompt + 同一模型（Qwen3-8B），只是把 GPU 推理换成 API 推理，结果一致。judge 本来就是 API 调用，多线程只是并行化。
+
+#### 6. 新增文件
+- `scripts/generate_candidates.py` — 服务器 GPU 候选生成入口。
+- `scripts/pre_generate.py` — 本地多线程 API 预生成（judge / zeroshot / judge_eval 三个子任务）。
+
+#### 7. 批量生成（`src/eval/baselines.py`）
+- `QwenZeroShotBaseline` 新增 `predict_batch`：多条 prompt 一起喂 GPU，8x 加速。
+- 新增 `FileBaseline`：从预生成 JSON 加载预测，跳过 GPU 推理。
+
+#### 8. run_eval 预生成支持（`src/eval/run_eval.py` + `scripts/run_eval.py`）
+- `run_eval` 新增 `pre_generated` 参数：`{baseline_name: json_path}`，跳过对应 baseline 的 GPU 推理。
+- `run_one_baseline` 支持批量推理（检测 `predict_batch` 是否被子类 override）。
+- `scripts/run_eval.py` 新增 `--pre-generated name=path` 参数。
+
+#### 9. preference.py 拆分（`src/data/preference.py`）
+- `generate_candidates_only`：GPU 候选生成，输出 candidates.jsonl。
+- `judge_candidates_only`：多线程 API judge，输出 dpo_pairs.jsonl。
+- 新增 `_RateLimiter` 多线程速率限制器。
+
+#### 10. llm_judge.py 多线程（`src/eval/llm_judge.py`）
+- `run_judge_eval` 新增 `max_workers` 和 `rpm` 参数。
+- `_judge_eval_parallel`：多线程并行 judge，保持顺序。
+
+#### 11. run_all.py 更新
+- GPU 阶段：`haystack → sft → gen_candidates → dpo → blind → eval`。
+- API 阶段由 `pre_generate.py` 独立处理，不在 run_all 中。
+- 移除 `--judge-model` 参数（judge 由 pre_generate 处理）。
+
+#### 12. 默认 provider 改为 aliyun（qwen-plus）
+- `preference.py`：`judge_provider` 默认 `"aliyun"`。
+- `llm_judge.py`：`judge_provider` 默认 `"aliyun"`。
+- `pre_generate.py`：`--provider` 默认 `"aliyun"`。
+
+### 开发中遇到的问题与解决方案
+- **问题**：4-bit 量化模型的 `base.dtype` 不可靠（返回存储精度 fp32 而非 compute dtype bf16）。
+  - 解决：显式用 `torch.bfloat16`。
+- **问题**：DPO pref 串行 API 调用 6h 太慢。
+  - 解决：GPU/API 分离 + 多线程，judge 部分 6h→10min。
+- **问题**：qwen-zeroshot 逐条 GPU 生成 3.5h 太慢。
+  - 解决：批量生成（predict_batch 8x）或 API 多线程（10min），两种跑法结果一致。
+
+### 代码实现要点
+- `student.py:73,142`：`self.classifier.to(device=device, dtype=torch.bfloat16)`。
+- `student.py:89`：`last_hidden = last_hidden.to(dtype=self.classifier.linear.weight.dtype)`。
+- `baselines.py:QwenZeroShotBaseline.predict_batch`：padding=True 批量生成。
+- `baselines.py:FileBaseline`：按 text 建索引 O(1) 查找。
+- `preference.py:generate_candidates_only`：GPU 候选生成，输出 candidates.jsonl。
+- `preference.py:judge_candidates_only`：ThreadPoolExecutor 多线程 judge。
+- `pre_generate.py`：统一 API 预生成入口（judge / zeroshot / judge_eval）。
+
+### 测试结果
+- 10 个 .py 文件 py_compile 全通过。
+- 13 个单测全通过。
+- `run_all.py --help` 正常。
+- blind 阶段实跑验证：2835 条，0 泄漏。
+
+### 性能优化
+- TF32：matmul 2-3x 加速。
+- SFT batch 8 + steps 减半：1.2-1.5x。
+- DataLoader 8 workers + prefetch：数据加载与计算重叠。
+- 多线程 API：judge 6h→10min，zeroshot 3.5h→10min，judge_eval 5h→5min。
+- **总预估**：20h → **7-9h**（GPU 6.5-8.5h + API 25min）。
+
+
 

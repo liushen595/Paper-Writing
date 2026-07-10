@@ -71,7 +71,7 @@ class StudentModel(nn.Module):
         self.hidden_size = base.config.hidden_size
         self.classifier = ClassifierHead(self.hidden_size)
         device = next(base.parameters()).device
-        self.classifier.to(device=device, dtype=base.dtype)
+        self.classifier.to(device=device, dtype=torch.bfloat16)
         log.info(f"Student 模型就绪: hidden_size={self.hidden_size}, LoRA r={sft_cfg.lora_r}")
 
     def forward(
@@ -87,6 +87,7 @@ class StudentModel(nn.Module):
             output_hidden_states=True, return_dict=True,
         )
         last_hidden = out.hidden_states[-1]
+        last_hidden = last_hidden.to(dtype=self.classifier.linear.weight.dtype)
         cls_logits = self.classifier(last_hidden, attention_mask)
         result: dict = {"logits": out.logits, "cls_logits": cls_logits, "hidden_states": last_hidden}
         if labels_clm is not None:
@@ -139,7 +140,7 @@ class StudentModel(nn.Module):
         obj.hidden_size = base.config.hidden_size
         obj.classifier = ClassifierHead(obj.hidden_size)
         device = next(model.parameters()).device
-        obj.classifier.to(device=device, dtype=base.dtype)
+        obj.classifier.to(device=device, dtype=torch.bfloat16)
         cls_head_path = ckpt_dir / "classifier_head.pt"
         if cls_head_path.exists():
             state = torch.load(cls_head_path, map_location="cpu")

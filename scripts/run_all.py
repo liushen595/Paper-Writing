@@ -1,27 +1,32 @@
 """犯罪意图识别框架 — 流水线驱动器。
 
-替代旧版 run_all.sh，提供更灵活的阶段控制：
+替代旧版 run_all.sh，提供更灵活的阶段控制。
+
+流水线分为三类阶段：
+  - GPU 阶段（服务器 3090）：haystack, sft, gen_candidates, dpo, blind, eval
+  - API 阶段（本地多线程，无需 GPU）：judge, judge_eval
+  - qwen-zeroshot 在 eval 阶段 GPU 上批量完成，不在此列
+  - 混合阶段：eval（可配合 --pre-generated 跳过部分 GPU baseline）
 
 用法:
-  python -m scripts.run_all                    # 从头跑完整流水线
-  python -m scripts.run_all --from sft         # 从 sft 阶段开始跑到结尾
-  python -m scripts.run_all --only sft         # 只跑 sft
-  python -m scripts.run_all --only pref dpo    # 只跑 pref + dpo
-  python -m scripts.run_all --from sft --to eval  # sft 到 eval（含两端）
-  python -m scripts.run_all --limit 200        # 限制样本数（传给支持的阶段）
-  python -m scripts.run_all --judge-model glm-4-flash  # 覆盖 judge 模型
+  # 服务器：跑 GPU 阶段
+  python -m scripts.run_all --from sft --to eval           # sft → eval（服务器 GPU）
+  python -m scripts.run_all --only sft                     # 只跑 sft
+  python -m scripts.run_all --only gen_candidates --limit 3000  # 生成候选
+
+  # 本地：跑 API 阶段（多线程，无需 GPU）
+  python -m scripts.pre_generate judge --input data/preference/candidates.jsonl --max-workers 10
+  python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_sft-no-dpo.json --max-workers 10
 
 阶段定义（按依赖顺序）:
-  haystack  下载 WildChat-nontoxic 草垛（需 HF token + 网络）
-  sft       Phase 1 监督微调（QLoRA + ToXCL 分类头）
-  pref      Phase 2 偏好对生成（依赖 sft checkpoint + LLM judge API）
-  dpo       Phase 2 DPO 训练（依赖 sft checkpoint + 偏好对）
-  blind     盲测集组装（本地，<1min）
-  eval      盲测集评估（依赖盲测集 + 4 个 baseline checkpoint）
-  judge     LLM-as-judge 质量评估（依赖 eval 输出的 predictions）
-
-已弃用阶段（数据已入仓，本机已跑完，不再纳入流水线）:
-  crawl / filter / synth / hardneg / implicit（Phase 3 改为 future work）
+  haystack        下载 WildChat-nontoxic 草垛（需 HF token + 网络）
+  sft             Phase 1 监督微调（QLoRA + ToXCL 分类头）
+  gen_candidates  Phase 2A 用 SFT 模型生成 DPO 候选（GPU，无 API）
+  judge           Phase 2B 多线程 judge API 生成偏好对（本地 API）
+  dpo             Phase 2 DPO 训练（依赖 sft checkpoint + 偏好对）
+  blind           盲测集组装（本地，<1min）
+  eval            盲测集评估（GPU baseline，含 qwen-zeroshot 批量推理）
+  judge_eval      LLM-as-judge 质量评估（本地 API 多线程）
 """
 from __future__ import annotations
 
@@ -32,58 +37,41 @@ from pathlib import Path
 
 from src.utils.env import PROJECT_ROOT
 
-# 阶段按依赖顺序排列
-STAGES: list[str] = ["haystack", "sft", "pref", "dpo", "blind", "eval", "judge"]
+# GPU 阶段（run_all 驱动 subprocess）
+GPU_STAGES: list[str] = ["haystack", "sft", "gen_candidates", "dpo", "blind", "eval"]
 
-# 每个阶段的命令模板（{limit} 仅在阶段支持 --limit 时替换）
+# API 阶段（由 pre_generate.py 处理，不在 run_all 中跑）
+# qwen-zeroshot 不在此列——它必须用 Qwen3-8B GPU 推理，eval 阶段自动完成
+API_STAGES: list[str] = ["judge", "judge_eval"]
+
+# 全部阶段（文档展示用）
+ALL_STAGES = GPU_STAGES + API_STAGES
+
+# 每个阶段的命令模板
 STAGE_COMMANDS: dict[str, list[str]] = {
-    "haystack": ["python", "-m", "scripts.prepare_haystack", "--n", "5000"],
-    "sft":     ["python", "-m", "scripts.run_sft", "{limit}"],
-    "pref":    ["python", "-m", "scripts.run_preference", "--judge", "aliyun", "--judge-model", "{judge_model}", "{limit}"],
-    "dpo":     ["python", "-m", "scripts.run_dpo"],
-    "blind":   ["python", "-m", "scripts.run_blind_set"],
-    "eval":    ["python", "-m", "scripts.run_eval", "{limit}"],
-    "judge":   [],  # 特殊处理：遍历 predictions_*.json，见 run_judge
+    "haystack":       ["python", "-m", "scripts.prepare_haystack", "--n", "5000"],
+    "sft":            ["python", "-m", "scripts.run_sft", "{limit}"],
+    "gen_candidates": ["python", "-m", "scripts.generate_candidates", "{limit}"],
+    "dpo":            ["python", "-m", "scripts.run_dpo"],
+    "blind":          ["python", "-m", "scripts.run_blind_set"],
+    "eval":           ["python", "-m", "scripts.run_eval", "{limit}"],
 }
 
 # 支持 --limit 的阶段
-LIMIT_STAGES: set[str] = {"sft", "pref", "eval"}
+LIMIT_STAGES: set[str] = {"sft", "gen_candidates", "eval"}
 
 
-def _fill_command(stage: str, limit: int | None, judge_model: str) -> list[str]:
+def _fill_command(stage: str, limit: int | None) -> list[str]:
     """填充阶段命令模板，去掉空占位符。"""
     template = STAGE_COMMANDS[stage]
-    if stage == "judge":
-        return []  # 不走这里
     cmd: list[str] = []
     for part in template:
         if part == "{limit}":
             if limit and stage in LIMIT_STAGES:
                 cmd.extend(["--limit", str(limit)])
             continue
-        if part == "{judge_model}":
-            cmd.append(judge_model)
-            continue
         cmd.append(part)
     return cmd
-
-
-def _run_judge(limit: int | None, judge_model: str) -> None:
-    """对 outputs/eval 下每个 predictions_<name>.json 跑 LLM-as-judge。"""
-    out_dir = PROJECT_ROOT / "outputs" / "eval"
-    if not out_dir.exists():
-        print(f"[judge] {out_dir} 不存在，请先运行 eval")
-        sys.exit(1)
-    pred_files = sorted(out_dir.glob("predictions_*.json"))
-    if not pred_files:
-        print(f"[judge] {out_dir} 下无 predictions_*.json，请先运行 eval")
-        sys.exit(1)
-    for pred in pred_files:
-        cmd = ["python", "-m", "scripts.run_judge_eval",
-               "--predictions", str(pred), "--judge", "aliyun", "--judge-model", judge_model]
-        if limit:
-            cmd.extend(["--limit", str(limit)])
-        _run(cmd, f"judge({pred.name})")
 
 
 def _run(cmd: list[str], stage: str) -> None:
@@ -98,47 +86,51 @@ def _run(cmd: list[str], stage: str) -> None:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="犯罪意图识别框架流水线驱动器")
+    ap = argparse.ArgumentParser(description="犯罪意图识别框架流水线驱动器（GPU 阶段）")
     ap.add_argument("--from", dest="from_stage", default=None,
-                    help=f"从指定阶段开始跑到结尾（可选: {', '.join(STAGES)})")
+                    help=f"从指定阶段开始跑到结尾（GPU 阶段: {', '.join(GPU_STAGES)})")
     ap.add_argument("--to", dest="to_stage", default=None,
-                    help=f"跑到指定阶段为止（含该阶段，可选: {', '.join(STAGES)})")
+                    help=f"跑到指定阶段为止（含该阶段，GPU 阶段: {', '.join(GPU_STAGES)})")
     ap.add_argument("--only", nargs="+", default=None,
-                    help=f"只跑指定阶段（可选: {', '.join(STAGES)})")
+                    help=f"只跑指定阶段（GPU 阶段: {', '.join(GPU_STAGES)})")
     ap.add_argument("--limit", type=int, default=None,
-                    help="限制样本数，传给支持的阶段（sft/pref/eval/judge），用于 smoke test")
-    ap.add_argument("--judge-model", default="qwen-plus",
-                    help="LLM judge 模型名（默认 glm-4-flash）")
+                    help="限制样本数（传给 sft/gen_candidates/eval）")
     args = ap.parse_args()
 
     # 确定要跑的阶段列表
     if args.only:
         chosen = args.only
     elif args.from_stage or args.to_stage:
-        start = STAGES.index(args.from_stage) if args.from_stage else 0
-        end = STAGES.index(args.to_stage) + 1 if args.to_stage else len(STAGES)
-        chosen = STAGES[start:end]
+        start = GPU_STAGES.index(args.from_stage) if args.from_stage else 0
+        end = GPU_STAGES.index(args.to_stage) + 1 if args.to_stage else len(GPU_STAGES)
+        chosen = GPU_STAGES[start:end]
     else:
-        chosen = STAGES
+        chosen = GPU_STAGES
 
     # 校验阶段名
     for s in chosen:
-        if s not in STAGES:
-            print(f"未知阶段: {s}; 可选: {', '.join(STAGES)}")
+        if s not in GPU_STAGES:
+            print(f"未知或非 GPU 阶段: {s}; GPU 阶段: {', '.join(GPU_STAGES)}")
+            print(f"API 阶段（用 pre_generate.py）: {', '.join(API_STAGES)}")
             sys.exit(1)
 
-    print(f"将执行阶段: {' -> '.join(chosen)}")
+    print(f"将执行 GPU 阶段: {' -> '.join(chosen)}")
     if args.limit:
         print(f"limit={args.limit}（传给支持的阶段）")
+    if "judge" in chosen or "judge_eval" in chosen:
+        print("\n注意: judge/judge_eval 是 API 阶段，请用:")
+        print(f"  python -m scripts.pre_generate judge --input ... --max-workers 10")
+        print(f"  python -m scripts.pre_generate judge_eval --input ... --max-workers 10")
 
     for stage in chosen:
-        if stage == "judge":
-            _run_judge(limit=args.limit, judge_model=args.judge_model)
-        else:
-            cmd = _fill_command(stage, limit=args.limit, judge_model=args.judge_model)
-            _run(cmd, stage)
+        cmd = _fill_command(stage, limit=args.limit)
+        _run(cmd, stage)
 
-    print("\n所有指定阶段执行完毕。")
+    print("\n所有指定 GPU 阶段执行完毕。")
+    if "gen_candidates" in chosen:
+        print("\n下一步（本地 API）: python -m scripts.pre_generate judge --input data/preference/candidates.jsonl --max-workers 10")
+    if "eval" in chosen:
+        print("\n下一步（本地 API）: python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_<name>.json --max-workers 10")
 
 
 if __name__ == "__main__":

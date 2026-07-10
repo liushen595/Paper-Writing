@@ -30,21 +30,39 @@ def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float
     rows = load_blind_set(blind_csv)
     if limit:
         rows = rows[:limit]
+    texts = [r.get("text", "") for r in rows]
     preds, labels, latencies = [], [], []
     predictions: list[dict] = []
-    for r in tqdm(rows, desc=f"Eval {baseline.name}", unit="sample"):
-        text = r.get("text", "")
-        gt_label = r.get("label", "Safe")
-        pred = baseline.predict(text)
-        preds.append(1 if pred.label == "Threat" else 0)
-        labels.append(label_to_int(gt_label))
-        latencies.append({"ms": pred.latency_ms, "tokens": pred.tokens})
-        predictions.append({
-            "text": text, "ref_label": gt_label, "model_label": pred.label,
-            "model_prob": pred.prob, "model_cot": pred.cot or "",
-            "ref_cot": r.get("ground_truth_cot", ""), "source": r.get("source", ""),
-            "latency_ms": pred.latency_ms, "tokens": pred.tokens,
-        })
+
+    # 批量推理（QwenZeroShotBaseline 等支持 predict_batch，大幅加速）
+    has_batch = type(baseline).predict_batch is not Baseline.predict_batch
+    if has_batch and len(texts) > 1:
+        batch_preds = baseline.predict_batch(texts)
+        for r, pred in zip(rows, batch_preds):
+            gt_label = r.get("label", "Safe")
+            preds.append(1 if pred.label == "Threat" else 0)
+            labels.append(label_to_int(gt_label))
+            latencies.append({"ms": pred.latency_ms, "tokens": pred.tokens})
+            predictions.append({
+                "text": r.get("text", ""), "ref_label": gt_label, "model_label": pred.label,
+                "model_prob": pred.prob, "model_cot": pred.cot or "",
+                "ref_cot": r.get("ground_truth_cot", ""), "source": r.get("source", ""),
+                "latency_ms": pred.latency_ms, "tokens": pred.tokens,
+            })
+    else:
+        for r in tqdm(rows, desc=f"Eval {baseline.name}", unit="sample"):
+            text = r.get("text", "")
+            gt_label = r.get("label", "Safe")
+            pred = baseline.predict(text)
+            preds.append(1 if pred.label == "Threat" else 0)
+            labels.append(label_to_int(gt_label))
+            latencies.append({"ms": pred.latency_ms, "tokens": pred.tokens})
+            predictions.append({
+                "text": text, "ref_label": gt_label, "model_label": pred.label,
+                "model_prob": pred.prob, "model_cot": pred.cot or "",
+                "ref_cot": r.get("ground_truth_cot", ""), "source": r.get("source", ""),
+                "latency_ms": pred.latency_ms, "tokens": pred.tokens,
+            })
     binary = compute_binary_metrics(preds, labels).as_dict()
     latency = compute_latency(latencies).__dict__
     log.info(f"[{baseline.name}] TPR={binary['tpr']:.3f} FPR={binary['fpr']:.3f} F1={binary['f1']:.3f} "
@@ -52,7 +70,8 @@ def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float
     return EvalReport(baseline_name=baseline.name, binary=binary, latency=latency, predictions=predictions)
 
 
-def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, limit: Optional[int] = None) -> Path:
+def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, limit: Optional[int] = None,
+             pre_generated: Optional[dict[str, str]] = None) -> Path:
     eval_cfg = cfg.eval
     names = baseline_names or eval_cfg.baselines
     blind_csv = (PROJECT_ROOT / eval_cfg.blind_csv).resolve()
@@ -60,18 +79,36 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, 
         raise RuntimeError(f"盲测集不存在: {blind_csv}; 请先运行 src/data/blind_set.py")
     out_dir = (PROJECT_ROOT / eval_cfg.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    pre_generated = pre_generated or {}
     reports: list[dict] = []
     for name in names:
-        baseline = _build_baseline(name, cfg)
-        rep = run_one_baseline(baseline, blind_csv, threshold=eval_cfg.threshold, limit=limit)
+        if name in pre_generated:
+            # 使用预生成预测，跳过 GPU 推理
+            pred_path = pre_generated[name]
+            log.info(f"[{name}] 使用预生成预测: {pred_path}")
+            with open(pred_path, "r", encoding="utf-8") as f:
+                predictions = json.load(f)
+            if limit:
+                predictions = predictions[:limit]
+            preds = [1 if p.get("model_label", "Safe") == "Threat" else 0 for p in predictions]
+            labels = [label_to_int(p.get("ref_label", "Safe")) for p in predictions]
+            latencies = [{"ms": p.get("latency_ms", 0.0), "tokens": p.get("tokens", 0)} for p in predictions]
+            binary = compute_binary_metrics(preds, labels).as_dict()
+            latency = compute_latency(latencies).__dict__
+        else:
+            baseline = _build_baseline(name, cfg)
+            rep = run_one_baseline(baseline, blind_csv, threshold=eval_cfg.threshold, limit=limit)
+            predictions = rep.predictions
+            binary = rep.binary
+            latency = rep.latency
         with open(out_dir / f"predictions_{name}.json", "w", encoding="utf-8") as f:
-            json.dump(rep.predictions, f, ensure_ascii=False, indent=2)
+            json.dump(predictions, f, ensure_ascii=False, indent=2)
         reports.append({
-            "baseline": rep.baseline_name,
-            **rep.binary,
-            "mean_ms": rep.latency["mean_ms"],
-            "tokens_per_sec": rep.latency["tokens_per_sec"],
-            "p95_ms": rep.latency["p95_ms"],
+            "baseline": name,
+            **binary,
+            "mean_ms": latency["mean_ms"],
+            "tokens_per_sec": latency["tokens_per_sec"],
+            "p95_ms": latency["p95_ms"],
         })
     table = format_metrics_table(reports)
     table_path = out_dir / "metrics_table.md"

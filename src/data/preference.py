@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import random
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -243,3 +244,165 @@ def _dummy_candidate_gen(prompt: str, n: int = 2) -> list[str]:
     """占位候选生成器；正式运行时由 make_sft_candidate_generator 提供 SFT 模型采样。"""
     log.warning("使用占位候选生成器，正式训练请传入 SFT checkpoint")
     return [f"[Reasoning] {prompt[:50]}... -> Threat.", f"[Reasoning] {prompt[:50]}... -> Safe."][:n]
+
+
+def generate_candidates_only(
+    data_cfg: DataConfig,
+    sft_cfg,
+    sft_ckpt: str | Path,
+    limit: Optional[int] = None,
+    out_path: Optional[str | Path] = None,
+) -> Path:
+    """Phase A（GPU）：用 SFT 模型批量生成候选回复，保存到 candidates.jsonl。
+
+    不调用任何 API，纯 GPU 推理。输出每行：
+    {"prompt": ..., "candidate_a": ..., "candidate_b": ...,
+     "ref_label": ..., "ref_cot": ...}
+    """
+    import torch
+    from .synthesis import load_synthesized
+    from ..models.student import StudentModel, load_tokenizer
+    from ..data.dataset import SYSTEM_PROMPT_SFT, INSTRUCTION_TEMPLATE
+
+    synth_path = (PROJECT_ROOT / data_cfg.synthesized_dir / "train.jsonl").resolve()
+    if not synth_path.exists():
+        raise RuntimeError(f"合成训练数据不存在: {synth_path}")
+    samples = load_synthesized(synth_path)
+    if limit:
+        samples = samples[:limit]
+
+    if out_path is None:
+        out_path = (PROJECT_ROOT / data_cfg.preference_dir / "candidates.jsonl").resolve()
+    else:
+        out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    log.info(f"加载 SFT 模型: {sft_ckpt}")
+    tokenizer = load_tokenizer(sft_cfg.base_model)
+    model = StudentModel.load(sft_cfg, sft_ckpt)
+    model.eval()
+    device = next(model.parameters()).device
+
+    temperatures = (0.3, 1.0)
+    system = SYSTEM_PROMPT_SFT
+    instr_tpl = INSTRUCTION_TEMPLATE
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        for i, s in enumerate(tqdm(samples, desc="Gen candidates", unit="sample")):
+            prompt = s.get("implicit_threat") or s.get("text", "")
+            ref_label = s.get("label", "Threat")
+            ref_cot = s.get("thought_process", "")
+            cands: list[str] = []
+            for t in temperatures:
+                messages = [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": instr_tpl.format(text=prompt)},
+                ]
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=sft_cfg.max_seq_len).to(device)
+                with torch.no_grad():
+                    out = model.base.generate(
+                        input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"],
+                        max_new_tokens=128, do_sample=True, temperature=t, top_p=0.95,
+                        pad_token_id=tokenizer.pad_token_id,
+                    )
+                gen = tokenizer.decode(out[0][inputs["input_ids"].size(1):], skip_special_tokens=True)
+                cands.append(gen)
+            record = {
+                "prompt": prompt, "candidate_a": cands[0], "candidate_b": cands[1],
+                "ref_label": ref_label, "ref_cot": ref_cot,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    log.info(f"候选生成完成: {i + 1} 条 -> {out_path}")
+    return out_path
+
+
+def judge_candidates_only(
+    data_cfg: DataConfig,
+    dpo_cfg: DPOConfig,
+    candidates_path: str | Path,
+    judge_provider: str = "aliyun",
+    judge_model: Optional[str] = None,
+    max_workers: int = 10,
+    rpm: float = 30000,
+    out_path: Optional[str | Path] = None,
+) -> Path:
+    """Phase B（API，多线程）：读取候选 JSONL，多线程调 judge API 生成偏好对。
+
+    不依赖 GPU，可在本地机器跑。judge_provider 默认 aliyun（qwen-plus）。
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    candidates_path = Path(candidates_path)
+    if not candidates_path.exists():
+        raise RuntimeError(f"候选文件不存在: {candidates_path}")
+
+    candidates: list[dict] = []
+    with open(candidates_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                candidates.append(json.loads(line))
+
+    log.info(f"加载 {len(candidates)} 条候选 from {candidates_path}")
+    judge = build_client(provider_name=judge_provider, model=judge_model)
+    log.info(f"Judge provider={judge.provider.name}, model={judge.model}, max_workers={max_workers}")
+
+    if out_path is None:
+        out_path = (PROJECT_ROOT / data_cfg.preference_dir / "dpo_pairs.jsonl").resolve()
+    else:
+        out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    rate_limiter = _RateLimiter(rpm)
+    write_lock = threading.Lock()
+    pairs: list[PreferencePair] = []
+
+    def _judge_one(c: dict) -> Optional[PreferencePair]:
+        rate_limiter.wait()
+        res = judge_with_swap(
+            judge, c["prompt"], c["candidate_a"], c["candidate_b"],
+            c.get("ref_label", "Threat"), c.get("ref_cot", ""),
+            reference_guided=True,
+        )
+        if res is None:
+            return None
+        chosen, rejected = res
+        return PreferencePair(prompt=c["prompt"], chosen=chosen, rejected=rejected, reason="")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_judge_one, c): c for c in candidates}
+        done = 0
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Judge", unit="pair"):
+            done += 1
+            try:
+                pair = future.result()
+            except Exception as e:
+                log.warning(f"Judge 线程异常: {e}")
+                continue
+            if pair is not None:
+                with write_lock:
+                    pairs.append(pair)
+
+    save_preference_pairs(pairs, out_path)
+    log.info(f"偏好对生成完成: {len(pairs)} 条 -> {out_path}")
+    return out_path
+
+
+class _RateLimiter:
+    """Token-bucket 速率限制器，多线程共享。"""
+
+    def __init__(self, rpm: float) -> None:
+        self.interval = 60.0 / max(rpm, 1.0)
+        self._lock = threading.Lock()
+        self._last_ts = 0.0
+
+    def wait(self) -> None:
+        import time
+        with self._lock:
+            now = time.monotonic()
+            wait = self.interval - (now - self._last_ts)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_ts = time.monotonic()

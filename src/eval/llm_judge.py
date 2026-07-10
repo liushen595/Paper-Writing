@@ -143,27 +143,37 @@ def run_judge_eval(
     judge_model: Optional[str] = None,
     out_path: Optional[str | Path] = None,
     limit: Optional[int] = None,
+    max_workers: int = 1,
+    rpm: float = 30000,
 ) -> JudgeEvalResult:
     """对一批模型预测做 LLM-as-judge 质量评估。
 
     predictions_path 支持：
     - JSON（run_eval.py 输出的 predictions_<name>.json，含 text/model_label/model_cot/ref_label/ref_cot）
     - CSV（同列名）
+
+    max_workers > 1 时使用多线程并行调 API（默认单线程兼容旧行为）。
     """
     client = build_client(provider_name=judge_provider, model=judge_model)
     rows = _load_predictions(predictions_path)
     if limit:
         rows = rows[:limit]
-    per_sample: list[dict] = []
-    correct = 0
-    for r in rows:
-        res = judge_quality(
-            client, r.get("text", ""), r.get("model_cot", ""), r.get("model_label", "Safe"),
-            r.get("ref_label", "Safe"), r.get("ref_cot", ""),
-        )
-        if res.get("correct"):
-            correct += 1
-        per_sample.append({**r, **res})
+
+    if max_workers <= 1:
+        per_sample: list[dict] = []
+        correct = 0
+        for r in rows:
+            res = judge_quality(
+                client, r.get("text", ""), r.get("model_cot", ""), r.get("model_label", "Safe"),
+                r.get("ref_label", "Safe"), r.get("ref_cot", ""),
+            )
+            if res.get("correct"):
+                correct += 1
+            per_sample.append({**r, **res})
+    else:
+        per_sample = _judge_eval_parallel(client, rows, max_workers, rpm)
+        correct = sum(1 for r in per_sample if r.get("correct"))
+
     s1 = correct / max(1, len(rows))
     s2 = correct / max(1, len([r for r in rows if r.get("ref_label") != "tie"]))
     bias_first = _biased_first_rate(per_sample)
@@ -182,3 +192,36 @@ def run_judge_eval(
             f"bias_first={bias_first:.3f} bias_verb={bias_verb:.3f} n={len(rows)}"
         )
     return result
+
+
+def _judge_eval_parallel(
+    client: BaseClient, rows: list[dict], max_workers: int, rpm: float,
+) -> list[dict]:
+    """多线程并行 judge，保持顺序与输入一致。"""
+    import threading, time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    interval = 60.0 / max(rpm, 1.0)
+    rate_lock = threading.Lock()
+    last_ts = 0.0
+    results: list[dict | None] = [None] * len(rows)
+
+    def _do_one(idx: int, r: dict) -> None:
+        nonlocal last_ts
+        with rate_lock:
+            now = time.monotonic()
+            wait = interval - (now - last_ts)
+            if wait > 0:
+                time.sleep(wait)
+            last_ts = time.monotonic()
+        res = judge_quality(
+            client, r.get("text", ""), r.get("model_cot", ""), r.get("model_label", "Safe"),
+            r.get("ref_label", "Safe"), r.get("ref_cot", ""),
+        )
+        results[idx] = {**r, **res}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_do_one, i, r): i for i, r in enumerate(rows)}
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Judge eval", unit="sample"):
+            f.result()
+    return results  # type: ignore

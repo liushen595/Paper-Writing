@@ -1,6 +1,7 @@
-"""评估基线：toxic-bert / qwen-zeroshot / explicit-cot / sft-no-dpo / dpo-only / implicit-cot。
+"""评估基线：toxic-bert / qwen-zeroshot / sft-no-dpo / dpo-only。
 
 每个 baseline 暴露 predict(text) -> (label, prob, cot?) 的统一接口。
+支持批量推理（predict_batch）加速评估。
 """
 from __future__ import annotations
 
@@ -101,6 +102,40 @@ class QwenZeroShotBaseline(Baseline):
             prob = 0.0
         return Prediction(label=label, prob=prob, cot=gen, latency_ms=ms, tokens=gen_tokens)
 
+    def predict_batch(self, texts: list[str], batch_size: int = 8) -> list[Prediction]:
+        """批量生成：多条 prompt 一起喂给 GPU，大幅减少推理延迟。"""
+        import time, torch
+        from ..data.llm_client import safe_json_extract
+        results: list[Prediction] = [None] * len(texts)  # type: ignore
+        for start in range(0, len(texts), batch_size):
+            batch_texts = texts[start:start + batch_size]
+            prompts = []
+            for text in batch_texts:
+                messages = [{"role": "user", "content": self.prompt_tpl.format(text=text)}]
+                prompt = self.tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                prompts.append(prompt)
+            t0 = time.perf_counter()
+            inputs = self.tok(prompts, return_tensors="pt", padding=True, truncation=True, max_length=1024).to(self.device)
+            with torch.no_grad():
+                out = self.model.generate(
+                    **inputs, max_new_tokens=512, do_sample=True, temperature=0.1,
+                    pad_token_id=self.tok.pad_token_id,
+                )
+            ms = (time.perf_counter() - t0) * 1000 / len(batch_texts)
+            for i in range(len(batch_texts)):
+                n_prompt = inputs["input_ids"].size(1)
+                gen = self.tok.decode(out[i][inputs["input_ids"].size(1):], skip_special_tokens=True)
+                gen_tokens = out.size(1) - inputs["input_ids"].size(1)
+                try:
+                    obj = safe_json_extract(gen)
+                    label = obj.get("label", "Safe")
+                    prob = float(obj.get("prob", 0.0))
+                except Exception:
+                    label = "Safe"
+                    prob = 0.0
+                results[start + i] = Prediction(label=label, prob=prob, cot=gen, latency_ms=ms, tokens=gen_tokens)
+        return results
+
 
 class StudentBaseline(Baseline):
     """通用：加载某个 StudentModel checkpoint 做推理（用于 sft-no-dpo / dpo-only 对比）。"""
@@ -154,3 +189,34 @@ def load_blind_set(csv_path: str | Path) -> list[dict]:
         for r in reader:
             rows.append(r)
     return rows
+
+
+class FileBaseline(Baseline):
+    """从预生成的 predictions JSON 加载预测结果，不走 GPU。
+
+    用于 qwen-zeroshot 等需要 GPU 推理但耗时过长的 baseline：
+    先在服务器上跑批量生成（或用其他方式），保存为 predictions_<name>.json，
+    eval 时直接加载，跳过 GPU 推理。
+    """
+
+    def __init__(self, name: str, predictions_path: str | Path):
+        import json
+        self.name = name
+        self.predictions_path = Path(predictions_path)
+        with open(self.predictions_path, "r", encoding="utf-8") as f:
+            self._all_preds = json.load(f)
+        # 按 text 建索引，O(1) 查找
+        self._by_text: dict[str, dict] = {}
+        for p in self._all_preds:
+            self._by_text[p.get("text", "")] = p
+        log.info(f"FileBaseline({name}): 加载 {len(self._all_preds)} 条预生成预测 from {self.predictions_path}")
+
+    def predict(self, text: str) -> Prediction:
+        p = self._by_text.get(text, {})
+        return Prediction(
+            label=p.get("model_label", "Safe"),
+            prob=float(p.get("model_prob", 0.0)),
+            cot=p.get("model_cot", ""),
+            latency_ms=float(p.get("latency_ms", 0.0)),
+            tokens=int(p.get("tokens", 0)),
+        )
