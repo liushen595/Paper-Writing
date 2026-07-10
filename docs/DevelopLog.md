@@ -340,4 +340,40 @@
 
 因此**不需要担心断点续跑破坏划分比例**。`_flush` 函数（`partial` 参数）的随机 shuffling 方式已废弃，当前代码中未被调用。
 
+---
+
+## 2026-07-10 16:48 CST — Synthesis 多线程 + 阿里云限流/安全错误处理
+
+### 本次代码更改做了什么
+
+1. **`src/data/llm_client.py`：新增三类异常 + 错误分类**
+   - `ContentSafetyError`：内容安全拒绝（"Output data may contain inappropriate content"），不重试直接跳过。
+   - `RateLimitError`：RPM/TPM 配额超限，sleep 60s 后重试。
+   - `BurstLimitError`：RPS 突发保护（"Request rate increased too quickly"），sleep 10s×2^attempt 后重试。
+   - `_classify_error(body)` 函数：根据响应 body 的关键字自动分类错误类型。
+   - `_stream_request`：检查 `resp.ok`，失败时调用 `_classify_error` 并 raise。
+   - `AliyunClient.chat`：catch `openai.RateLimitError` / `APIStatusError` / `APIError`，调 `_classify_error` 转换。
+
+2. **`src/data/synthesis.py`：多线程支持 + 限流器 + 错误感知重试**
+   - 新增 `RateLimiter` 类：Token-bucket 实现，按 rpm 控制全局调用间隔，多线程共享一把锁。
+   - `synthesize_one` 新增 `rate_limiter` 可选参数；API call 前 `rate_limiter.wait()`；catch 三类异常分别处理（ContentSafetyError 直接跳过，RateLimitError 等 60s，BurstLimitError 指数退避）。
+   - `run_synthesis` 新增 `max_workers: int = 1` 和 `rpm: float = 120` 参数。
+     - `max_workers ≤ 1`：走原顺序路径 `_run_sequential`，完全不引入多线程开销。
+     - `max_workers > 1`：走 `_run_parallel`，使用 `ThreadPoolExecutor` + `as_completed` 并发处理，每 10 条打印一次进度。
+   - `_save_single` 加 `_write_lock`（`threading.Lock()`）保证线程安全写入。
+   - `_run_sequential` / `_run_parallel` 两个辅助函数，分离顺序/并发逻辑。
+
+3. **`scripts/run_synthesis.py`：CLI 暴露并发参数**
+   - `--max-workers N`：并发线程数，默认 1（顺序模式）。
+   - `--rpm N`：每分钟最多调用次数，默认 120（仅 `max_workers>1` 时生效）。
+   - 用法：`--provider aliyun --model qwen-plus --max-workers 5 --rpm 100`
+
+### 关于不重复处理
+
+`records[start:]` 一次性分片进入 `ThreadPoolExecutor.submit`，每条 record 只产生一个 future，天然不重复。`_save_single` 的 url hash 确定性分配保证每条记录归属一致。
+
+### 测试结果
+- 语法检查通过（`ast.parse`）。
+- `pytest tests/test_logic.py -q`：13 passed，原有单测未受影响。
+
 

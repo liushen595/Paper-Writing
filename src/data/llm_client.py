@@ -1,4 +1,4 @@
-"""统一的 Teacher LLM 客户端封装：支持 OpenAI 兼容接口（GLM / Agnes 等），流式传输。
+"""统一的 Teacher LLM 客户端封装：支持 OpenAI 兼容接口（GLM / Agnes / 阿里云等），流式传输。
 
 所有 provider 均暴露 chat(messages, **gen_kwargs) -> str 接口，
 造数 / 偏好对 / Judge 复用同一套客户端。失败自动重试。
@@ -12,12 +12,24 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import requests
-from openai import OpenAI
+from openai import APIError, APIStatusError, OpenAI, RateLimitError as OpenAIRateLimit
 
 from ..utils.env import EnvConfig, LLMProviderConfig, load_env_config
 from ..utils.logging import get_logger
 
 log = get_logger("llm_client")
+
+
+class ContentSafetyError(Exception):
+    """Output may contain inappropriate content. Do not retry, skip this record."""
+
+
+class RateLimitError(Exception):
+    """RPM or TPM quota exceeded. Sleep and retry."""
+
+
+class BurstLimitError(Exception):
+    """Request rate increased too quickly (RPS burst protection). Sleep and retry."""
 
 
 @dataclass
@@ -72,16 +84,23 @@ class AliyunClient(BaseClient):
         self._client = OpenAI(api_key=provider.api_key, base_url=provider.base_url)
 
     def chat(self, messages: list[ChatMessage], temperature: float = 0.7, max_tokens: int = 2048, **kw) -> str:
-        completion = self._client.chat.completions.create(
-            model=self.model,
-            messages=[m.to_dict() for m in messages],
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stream=True,
-            stream_options={"include_usage": True},
-            response_format={"type": "json_object"},
-            **kw,
-        )
+        try:
+            completion = self._client.chat.completions.create(
+                model=self.model,
+                messages=[m.to_dict() for m in messages],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                stream_options={"include_usage": True},
+                response_format={"type": "json_object"},
+                **kw,
+            )
+        except OpenAIRateLimit as e:
+            raise _classify_error(e.message) from e
+        except APIStatusError as e:
+            raise _classify_error(e.message) from e
+        except APIError as e:
+            raise _classify_error(e.message) from e
         chunks: list[str] = []
         received_done = False
         last_log_len = 0
@@ -103,10 +122,31 @@ class AliyunClient(BaseClient):
         return "".join(chunks)
 
 
+_RPM_MSGS = ("requests rate limit exceeded", "you exceeded your current requests")
+_TPM_MSGS = ("allocated quota exceeded", "you exceeded your current quota")
+_BURST_MSGS = ("request rate increased too quickly",)
+_SAFETY_MSGS = ("output data may contain inappropriate content",)
+
+
+def _classify_error(body: str) -> Exception:
+    """根据响应 body 分类错误类型。"""
+    lower = body.lower()
+    if any(m in lower for m in _SAFETY_MSGS):
+        return ContentSafetyError(body)
+    if any(m in lower for m in _RPM_MSGS + _TPM_MSGS):
+        return RateLimitError(body)
+    if any(m in lower for m in _BURST_MSGS):
+        return BurstLimitError(body)
+    return RuntimeError(body)
+
+
 def _stream_request(url: str, payload: dict, headers: dict, timeout: int) -> str:
-    """流式请求：逐 chunk 接收，拼接完整响应。检测截断并抛异常以触发重试。"""
+    """流式请求：逐 chunk 接收，拼接完整响应。检测错误和截断并抛异常以触发重试。"""
     resp = requests.post(url, json=payload, headers=headers, timeout=timeout, stream=True)
-    resp.raise_for_status()
+    if not resp.ok:
+        body = resp.text
+        resp.close()
+        raise _classify_error(body)
     chunks: list[str] = []
     received_done = False
     try:
