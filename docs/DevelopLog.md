@@ -412,4 +412,82 @@
 - 语法检查通过
 - 13 个已有单测未受影响
 
+---
+
+## 2026-07-11 — Bug 修复 + 数据泄漏修复 + 流水线重写 + Phase 3 退役
+
+### 本次代码更改做了什么
+
+#### 1. 流水线 Bug 修复（6 处，不修跑不起来）
+1. **DPO `peft_config` 位置错误**（`src/training/dpo.py`）：`peft_config` 传给了 `TRLDPOConfig`（不接受此参数，会 TypeError），移到 `DPOTrainer` 构造参数。
+2. **DPO metric 名称错误**（`src/training/dpo.py`）：`metric_for_best_model` 从错误的 `"eval_reward_accuracies"` 改为 trl 0.18.1 实际输出的 `"eval_rewards/accuracies"`。
+3. **`QwenZeroShotBaseline` thinking 模式吃光 token**（`src/eval/baselines.py`）：Qwen3 默认 thinking 模式 + max_new_tokens=128 导致 thinking block 占满，JSON 永远不产出，恒返回 Safe/0.0。改为 `apply_chat_template(..., enable_thinking=False)` + max_new_tokens=512 + do_sample=True/temperature=0.1 避免贪婪重复。
+4. **Token 计数虚高**（`src/eval/baselines.py`）：`tokens=out.size(1)` 计入 prompt token，改为 `out.size(1) - inputs["input_ids"].size(1)` 只计生成 token。
+5. **`safe_json_extract` 无错误处理**（`src/data/preference.py` + `src/eval/llm_judge.py`）：解析失败抛 ValueError 中断全流程，外包 try/except 返回默认值。
+
+#### 2. 数据泄漏修复（3 处，不修论文结果无效）
+1. **hard_negatives 未按 split 过滤**（`src/data/dataset.py`）：`build_train_examples` 对 train/test split 都加载全部 4622 条 hard_negatives，忽略已有的 `split_origin` 字段。改为按 `split_origin` 过滤（train→train-origin 3722 条，test→test-origin 900 条）。
+2. **盲测集 haystack 含训练数据**（`src/data/blind_set.py`）：用全部 hard_negatives 做 haystack，其中 3722 条在训练集中。改为只用 `split_origin=="test"` 的 900 条。
+3. **train/test 文本重复**（`data/synthesized/train.jsonl`）：160 条 test 样本出现在 train 中，从 train.jsonl 去重移除（7606→7446）。
+
+#### 3. Phase 3 隐式 CoT 内化退役
+- delta=8 + 20 epoch 仅移除 8 个 thought token（thought 通常 50-150 token），不足以完成内化。
+- 加大 delta 至 50-60 收敛风险高 + 需 35-45h+，超出 37h 提交周期。
+- **决策：完全放弃，改为 future work**。代码保留（`src/training/implicit_cot.py`），baseline 移除 implicit-cot。
+- 论文聚焦 ToXCL 分类头（SFT）+ DPO 降 FPR。
+
+#### 4. Baseline 精简（6→4）
+- 移除 `explicit-cot`（与 `sft-no-dpo` 同一 checkpoint，冗余）。
+- 移除 `implicit-cot`（Phase 3 退役）。
+- 保留 4 个：`toxic-bert` / `qwen-zeroshot` / `sft-no-dpo` / `dpo-only`。
+- `configs/default.yaml` 和 `src/eval/run_eval.py` 同步更新。
+
+#### 5. run_all.sh 重写为 Python 驱动器
+- 旧版 `run_all.sh` 的问题：
+  - `all` 分支 pref 在 sft 之前执行（顺序 bug）。
+  - 包含已在本机做完的阶段（crawl/filter/synth/hardneg）。
+  - 无 `--from` / `--only` / `--limit` 支持。
+- 新版 `scripts/run_all.py`：
+  - `--from <stage>`：从指定阶段开始跑到结尾。
+  - `--to <stage>`：跑到指定阶段为止（含两端）。
+  - `--only <stage>...`：只跑指定阶段。
+  - `--limit N`：限制样本数（传给 sft/pref/eval/judge）。
+  - `--judge-model <name>`：覆盖 judge 模型。
+  - 阶段：`haystack → sft → pref → dpo → blind → eval → judge`。
+  - `run_all.sh` 保留为 bash shim（兼容旧调用）。
+
+#### 6. --limit 参数新增（smoke test 用）
+- `scripts/run_sft.py` + `src/training/sft.py`：`--limit N` 限制训练+验证样本数。
+- `scripts/run_eval.py` + `src/eval/run_eval.py`：`--limit N` 限制盲测样本数。
+- `scripts/run_judge_eval.py` + `src/eval/llm_judge.py`：`--limit N` 限制 judge 评估样本数。
+- `scripts/run_preference.py` 已有 `--limit`。
+
+#### 7. 文档更新
+- `docs/Methodology.md`：§1.3 Phase 3 标 future work；§3.2 补充 split_origin + 去重说明；§3.4 盲测集改为 900 test-hard + 2000 WildChat；§5.3 Phase 3 退役说明；§6.1 baseline 6→4；§7 Table 2 改为各 baseline 延迟对比；§9 硬件改 RTX 3090、入口改 run_all.py。
+- `docs/TODO.md`：重写运行方式（run_all.py 为主）、时间估算更新、smoke test 方案。
+
+### 开发中遇到的问题与解决方案
+- **问题：trl 0.18.1 的 DPOConfig 不接受 peft_config 参数**（与旧版教程不一致）。
+  - 解决：确认 trl 0.18.1 源码，`peft_config` 在 `DPOTrainer.__init__` 而非 `DPOConfig`。
+- **问题：hard_negatives 的 split_origin 字段未被代码使用**。
+  - 解决：在 `build_train_examples` 和 `blind_set.assemble_blind_set` 中按 `split_origin` 过滤。
+- **问题：Qwen3 默认 thinking 模式输出超长**。
+  - 解决：`apply_chat_template(..., enable_thinking=False)` 关闭 thinking。
+
+### 代码实现要点
+- `src/data/dataset.py:build_train_examples`：`hard = [h for h in hard_all if h.get("split_origin", "train") == split]`。
+- `src/data/blind_set.py:assemble_blind_set`：haystack hard 只取 `split_origin=="test"`。
+- `src/eval/baselines.py:QwenZeroShotBaseline.predict`：`enable_thinking=False` + `max_new_tokens=512` + `do_sample=True, temperature=0.1`。
+- `src/training/dpo.py`：`peft_config=lora_cfg` 移到 `DPOTrainer(...)`，`metric_for_best_model="eval_rewards/accuracies"`。
+- `scripts/run_all.py`：subprocess 驱动，`--from` / `--to` / `--only` / `--limit` / `--judge-model`。
+
+### 测试结果
+- `python -m scripts.run_all --help` 正常。
+- `bash scripts/run_all.sh --help` 正常（bash shim 委托 Python）。
+- 数据去重：train.jsonl 7606→7446（移除 160 条与 test 重复）。
+- 尚未跑 smoke test（需服务器 GPU）。
+
+### 性能优化
+- 无（本轮为 bug 修复 + 架构调整，无性能相关改动）。
+
 

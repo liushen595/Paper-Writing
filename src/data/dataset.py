@@ -74,14 +74,19 @@ def _from_hard(d: dict) -> TrainExample:
 
 
 def build_train_examples(data_cfg: DataConfig, split: str = "train") -> list[TrainExample]:
-    """合成正样本(train/test) + 硬负样本 -> TrainExample 列表。"""
+    """合成正样本(train/test) + 硬负样本 -> TrainExample 列表。
+
+    硬负样本按 ``split_origin`` 字段过滤，确保 train split 只用 train-origin 硬负样本，
+    test split 只用 test-origin 硬负样本，避免验证集/盲测集数据泄漏。
+    """
     synth_dir = (PROJECT_ROOT / data_cfg.synthesized_dir).resolve()
     synth = load_jsonl(synth_dir / f"{split}.jsonl")
-    hard = load_jsonl(synth_dir / "hard_negatives.jsonl")
+    hard_all = load_jsonl(synth_dir / "hard_negatives.jsonl")
+    hard = [h for h in hard_all if h.get("split_origin", "train") == split]
     examples = [_from_synth(d) for d in synth] + [_from_hard(d) for d in hard]
     set_seed(data_cfg.seed + (0 if split == "train" else 1))
     random.shuffle(examples)
-    log.info(f"构建 {split} 集样本: synth={len(synth)}, hard={len(hard)}, total={len(examples)}")
+    log.info(f"构建 {split} 集样本: synth={len(synth)}, hard(split_origin={split})={len(hard)}, total={len(examples)}")
     return examples
 
 

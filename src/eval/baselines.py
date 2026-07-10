@@ -60,7 +60,7 @@ class ToxicBertBaseline(Baseline):
 
 
 class QwenZeroShotBaseline(Baseline):
-    """未微调 Qwen3-8B 零样本提示（默认 thinking 模式）。"""
+    """未微调 Qwen3-8B 零样本提示（关闭 thinking 模式，直接输出 JSON）。"""
 
     name = "qwen-zeroshot"
 
@@ -73,7 +73,7 @@ class QwenZeroShotBaseline(Baseline):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.prompt_tpl = (
             "Read the message and decide if it expresses implicit criminal intent. "
-            "Output JSON {{\"label\": \"Threat\"|\"Safe\", \"prob\": 0.0-1.0, \"reason\": \"...\"}}.\n"
+            'Output JSON {{"label": "Threat"|"Safe", "prob": 0.0-1.0, "reason": "..."}}.\n'
             "Message: {text}\nJSON:"
         )
 
@@ -81,10 +81,15 @@ class QwenZeroShotBaseline(Baseline):
         import time, torch
         from ..data.llm_client import safe_json_extract
         t0 = time.perf_counter()
-        prompt = self.prompt_tpl.format(text=text)
+        messages = [{"role": "user", "content": self.prompt_tpl.format(text=text)}]
+        prompt = self.tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
         inputs = self.tok(prompt, return_tensors="pt").to(self.device)
         with torch.no_grad():
-            out = self.model.generate(**inputs, max_new_tokens=128, do_sample=False)
+            out = self.model.generate(
+                **inputs, max_new_tokens=512, do_sample=True, temperature=0.1,
+                pad_token_id=self.tok.pad_token_id,
+            )
+        gen_tokens = out.size(1) - inputs["input_ids"].size(1)
         gen = self.tok.decode(out[0][inputs["input_ids"].size(1):], skip_special_tokens=True)
         ms = (time.perf_counter() - t0) * 1000
         try:
@@ -94,11 +99,11 @@ class QwenZeroShotBaseline(Baseline):
         except Exception:
             label = "Safe"
             prob = 0.0
-        return Prediction(label=label, prob=prob, cot=gen, latency_ms=ms, tokens=out.size(1))
+        return Prediction(label=label, prob=prob, cot=gen, latency_ms=ms, tokens=gen_tokens)
 
 
 class StudentBaseline(Baseline):
-    """通用：加载某个 StudentModel checkpoint 做推理（用于 explicit-cot / sft-no-dpo / implicit-cot 对比）。"""
+    """通用：加载某个 StudentModel checkpoint 做推理（用于 sft-no-dpo / dpo-only 对比）。"""
 
     def __init__(self, name: str, ckpt_dir: str | Path, sft_cfg, conditional_decoding: bool = True):
         from ..models.student import StudentModel, load_tokenizer
@@ -117,28 +122,28 @@ class StudentBaseline(Baseline):
 
     def predict(self, text: str) -> Prediction:
         import time, torch
-        from ..data.dataset import SYSTEM_PROMPT_SFT, INSTRUCTION_TEMPLATE
         t0 = time.perf_counter()
         messages = [
             {"role": "system", "content": self.system},
             {"role": "user", "content": self.instr_tpl.format(text=text)},
         ]
-        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
         inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(self.device)
+        n_prompt = inputs["input_ids"].size(1)
         with torch.no_grad():
             cls_logits = self.model(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])["cls_logits"]
             cls_prob = float(torch.softmax(cls_logits, dim=-1)[0, 1].item())
             if self.conditional_decoding and cls_prob <= 0.5:
                 ms = (time.perf_counter() - t0) * 1000
-                return Prediction(label="Safe", prob=cls_prob, latency_ms=ms, tokens=inputs["input_ids"].size(1))
+                return Prediction(label="Safe", prob=cls_prob, latency_ms=ms, tokens=0)
             out = self.model.base.generate(
                 input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"],
                 max_new_tokens=256, do_sample=False, pad_token_id=self.tokenizer.pad_token_id,
             )
-        gen = self.tokenizer.decode(out[0][inputs["input_ids"].size(1):], skip_special_tokens=True)
+        gen = self.tokenizer.decode(out[0][n_prompt:], skip_special_tokens=True)
         ms = (time.perf_counter() - t0) * 1000
         label = "Threat" if cls_prob > 0.5 else "Safe"
-        return Prediction(label=label, prob=cls_prob, cot=gen, latency_ms=ms, tokens=out.size(1))
+        return Prediction(label=label, prob=cls_prob, cot=gen, latency_ms=ms, tokens=out.size(1) - n_prompt)
 
 
 def load_blind_set(csv_path: str | Path) -> list[dict]:

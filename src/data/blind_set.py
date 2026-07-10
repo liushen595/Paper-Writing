@@ -45,8 +45,9 @@ def assemble_blind_set(
         })
 
     haystack: list[dict] = []
-    # 来源1: synth 内部展开的 hard_negative（来自 hard_negatives.jsonl）
-    hard = load_jsonl((PROJECT_ROOT / data_cfg.synthesized_dir / "hard_negatives.jsonl").resolve())
+    # 来源1: synth 内部展开的 hard_negative（仅取 split_origin=="test"，避免训练集泄漏）
+    hard_all = load_jsonl((PROJECT_ROOT / data_cfg.synthesized_dir / "hard_negatives.jsonl").resolve())
+    hard = [h for h in hard_all if h.get("split_origin", "train") == "test"]
     for h in hard:
         haystack.append({"text": h.get("text", ""), "label": h.get("label", "Safe"), "source": "haystack_hard", "category": h.get("category", ""), "ground_truth_cot": h.get("thought_process", "")})
 

@@ -51,7 +51,10 @@ def judge_quality(client: BaseClient, text: str, model_cot: str, model_label: st
         )),
     ]
     raw = client.chat(msgs, temperature=0.0, max_tokens=256)
-    obj = safe_json_extract(raw)
+    try:
+        obj = safe_json_extract(raw)
+    except (ValueError, json.JSONDecodeError):
+        obj = {}
     if "score" not in obj:
         obj["score"] = 0
     if "correct" not in obj:
@@ -139,6 +142,7 @@ def run_judge_eval(
     judge_provider: str = "glm",
     judge_model: Optional[str] = None,
     out_path: Optional[str | Path] = None,
+    limit: Optional[int] = None,
 ) -> JudgeEvalResult:
     """对一批模型预测做 LLM-as-judge 质量评估。
 
@@ -148,6 +152,8 @@ def run_judge_eval(
     """
     client = build_client(provider_name=judge_provider, model=judge_model)
     rows = _load_predictions(predictions_path)
+    if limit:
+        rows = rows[:limit]
     per_sample: list[dict] = []
     correct = 0
     for r in rows:

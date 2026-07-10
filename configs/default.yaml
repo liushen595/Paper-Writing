@@ -11,7 +11,7 @@ data:
   seed: 42
   max_text_len: 512
   haystack_path: "data/haystack/wildchat_nontoxic.jsonl"  # WildChat-nontoxic 英文子集
-  haystack_size: 5000                                     # 草垛采样条数（FPR 分母）
+  haystack_size: 2000                                     # 草垛采样条数（FPR 分母）
 
 sft:
   base_model: "Qwen/Qwen3-8B"
@@ -25,10 +25,10 @@ sft:
   cls_loss_weight: 1.0
   clm_loss_weight: 1.0
   use_roberta_distill: false
-  learning_rate: 5.0e-5
+  learning_rate: 2.0e-4
   num_epochs: 3
-  per_device_batch_size: 4      # RTX 4060: 1; 服务器: 4
-  gradient_accumulation_steps: 4 # RTX 4060: 16 (等效 batch=16); 服务器: 4
+  per_device_batch_size: 8      # RTX 3090 24GB: 8 (QLoRA + gradient checkpointing)
+  gradient_accumulation_steps: 2 # 等效 batch=16
   warmup_ratio: 0.03
   max_seq_len: 1024               # RTX 4060: 512; 服务器: 1024
   early_stopping_patience: 3
@@ -37,10 +37,10 @@ sft:
 
 dpo:
   beta: 0.1
-  learning_rate: 5.0e-7
+  learning_rate: 5.0e-6
   num_epochs: 1
-  per_device_batch_size: 2       # RTX 4060: 1; 服务器: 2
-  gradient_accumulation_steps: 8 # RTX 4060: 16; 服务器: 8
+  per_device_batch_size: 4       # RTX 3090 24GB: 4
+  gradient_accumulation_steps: 4 # 等效 batch=16
   max_prompt_len: 256
   max_length: 1024                # RTX 4060: 512; 服务器: 1024
   early_stopping_patience: 2
@@ -65,7 +65,7 @@ implicit_cot:
 eval:
   blind_csv: "data/blind/test_blind.csv"
   threshold: 0.5
-  baselines: ["toxic-bert", "qwen-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
+  baselines: ["toxic-bert", "qwen-zeroshot", "sft-no-dpo", "dpo-only"]
   judge_provider: "agnes"
   judge_swap_positions: true
   judge_reference_guided: true

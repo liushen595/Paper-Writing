@@ -54,7 +54,7 @@ def _evaluate(model: StudentModel, loader: DataLoader, device: torch.device) -> 
     return total_loss / max(1, n_batches)
 
 
-def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split: str = "train") -> Path:
+def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split: str = "train", limit: Optional[int] = None) -> Path:
     sft_cfg = sft_cfg or cfg.sft
     set_seed(cfg.seed)
     log_dir = default_log_dir()
@@ -62,21 +62,27 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
 
     tokenizer = load_tokenizer(sft_cfg.base_model)
     examples = build_train_examples(cfg.data, split=split)
+    if limit:
+        examples = examples[:limit]
     if not examples:
         raise RuntimeError(f"无训练样本，请先运行 src/data/synthesis.py 生成数据 (split={split})")
     dataset = SFTDataset(examples, tokenizer, max_seq_len=sft_cfg.max_seq_len)
     collator = SFTCollator(tokenizer, max_seq_len=sft_cfg.max_seq_len)
     loader = DataLoader(
         dataset, batch_size=sft_cfg.per_device_batch_size, shuffle=True,
-        collate_fn=collator, num_workers=2, pin_memory=True,
+        collate_fn=collator, num_workers=8, pin_memory=True,
+        persistent_workers=True, prefetch_factor=4,
     )
 
     # 验证集
     val_examples = build_train_examples(cfg.data, split="test")
+    if limit:
+        val_examples = val_examples[:limit]
     val_dataset = SFTDataset(val_examples, tokenizer, max_seq_len=sft_cfg.max_seq_len)
     val_loader = DataLoader(
         val_dataset, batch_size=sft_cfg.per_device_batch_size, shuffle=False,
-        collate_fn=collator, num_workers=2, pin_memory=True,
+        collate_fn=collator, num_workers=8, pin_memory=True,
+        persistent_workers=True, prefetch_factor=4,
     )
 
     out_dir = Path(sft_cfg.output_dir)
@@ -126,7 +132,7 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
             if (global_step + 1) % sft_cfg.gradient_accumulation_steps == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
             global_step += 1
             pbar.set_postfix(loss=f"{loss.item():.4f}", cls=f"{outputs['cls_loss'].item():.4f}", clm=f"{outputs['clm_loss'].item():.4f}")
 

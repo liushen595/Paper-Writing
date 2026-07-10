@@ -14,9 +14,9 @@
 训练一个**本地端到端小语言模型（SLM, Qwen3-8B）**，使其：
 1. 通过**显式思维链（Explicit CoT）**学会对隐式意图的逻辑溯因；
 2. 通过**直接偏好优化（DPO）**学会在模棱两可言论上保持克制（降低误报 FPR）；
-3. 通过**隐式思维链内化（Implicit CoT via Stepwise Internalization）**将推理过程压缩进隐状态，推理阶段不输出中间 token，大幅降低延迟。
+3. （Future Work）通过**隐式思维链内化（Implicit CoT via Stepwise Internalization）**将推理过程压缩进隐状态，推理阶段不输出中间 token，大幅降低延迟。
 
-替代高成本且存在隐私泄露风险的云端 API 调用方案，可在单张 RTX 4090 (24GB) 上完成训练与推理。
+替代高成本且存在隐私泄露风险的云端 API 调用方案，可在单张 RTX 3090 (24GB) 上完成训练与推理。
 
 ## 2. 相关工作与理论支撑
 
@@ -47,14 +47,15 @@
      - `hard_negative`：空字符串（非犯罪记录不生成硬负样本）。
      - `thought_process`：说明其为非犯罪事务、无犯罪意图。
      - `label="Safe"`，`probability≈0`，`category="NonCriminal"`。
-3. 按 80/20 切分 train/test，test 不参与任何训练。
+3. 按 80/20 切分 train/test，test 不参与任何训练。**硬负样本携带 `split_origin` 字段**（值为 `train` 或 `test`），与对应的合成样本同源切分，确保训练集与验证集/盲测集的硬负样本零重叠。
 4. **质量保障**：免费 Teacher 弱于 GPT-4，造数产物须经人工抽检 + judge 一致性过滤才进入训练集。
+5. **去重**：从 `train.jsonl` 中移除与 `test.jsonl` 文本重复的样本，杜绝测试集泄漏到训练集。
 
 ### 3.3 三分类偏好方案（Wen et al. 2023）
 所有样本归入 隐式意图 (Implicit-Intent) > 显式意图 (Explicit-Intent) > 无意图 (No-Intent) 三档，档内视为等价，用于 DPO 偏好对的低分歧标注。
 
 ### 3.4 盲测集（Zero-Knowledge Test Set）
-- **草垛 (Haystack)**：`data/synthesized/hard_negatives.jsonl`（synthesis 展开的安全对照言论）+ `data/haystack/wildchat_nontoxic.jsonl`（`allenai/WildChat-nontoxic` 英文子集 5000 条，由 `scripts/prepare_haystack.py` 采样）。原 `doj_non_criminal` 已弃用。
+- **草垛 (Haystack)**：`data/synthesized/hard_negatives.jsonl` 中 `split_origin=="test"` 的子集（900 条安全对照言论，与训练集零重叠）+ `data/haystack/wildchat_nontoxic.jsonl`（`allenai/WildChat-nontoxic` 英文子集 2000 条，由 `scripts/prepare_haystack.py` 采样）。原 `doj_non_criminal` 已弃用。
 - **针 (Needles)**：合成 test.jsonl 中的 `implicit_threat`，与训练集零重叠。
 - 随机种子混合，记录 source / ground-truth / 参考推理。
 
@@ -90,7 +91,10 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 - DPO β 起始 **0.1**（Wen et al. 2023 PPO 的 KL 系数经验甜点）。
 - **Judge 质量保障**：judge-human 一致性校验（抽样 100 对，目标 S2≥80%）；按 Zheng 2023 App F 微调开源 Qwen3-8B 三分类 judge 作廉价补充。
 
-### 5.3 Phase 3: 隐式 CoT 内化（Stepwise Internalization, Deng et al. 2024）
+### 5.3 Phase 3: 隐式 CoT 内化（Stepwise Internalization, Deng et al. 2024）—— Future Work
+
+> 因时间约束（论文提交周期 37h），Phase 3 完整内化实验未纳入本轮论文，列为后续工作。以下为方法设计与可行性分析。
+
 - **主方法**：从 Phase 1 显式 CoT 模型出发，按线性调度逐步移除 thought token 并微调：
   $$s(t) = \left\lfloor \Delta \frac{t}{T} \right\rfloor$$
 - **稳定性三件套**（消融验证）：
@@ -98,18 +102,18 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
   2. **优化器状态重置**：每次新增移除 token 时重置 AdamW 一阶/二阶矩。
   3. **左移除**：从 thought 序列开头移除（右移除显著更差）。
 - Δ 起始 8；目标全部移除后模型直接输出 Threat/Safe + 概率，无中间 token。
-- **硬件核算**：RTX 4090 24GB QLoRA 峰值 14-18GB 可行；多轮重训工时长，建议 Δ 适中 + 早停。
+- **本轮实验未纳入的原因**：实测 delta=8 + 20 epoch 仅移除 8 个 thought token（thought 通常 50-150 token），远不足以完成内化；加大 delta 至 50-60 收敛风险高且需 35-45h+，超出提交周期。代码已实现（`src/training/implicit_cot.py`），后续可在此基础上调参完成完整内化。
+- **硬件核算**：RTX 3090 24GB QLoRA 峰值可行；多轮重训工时长，建议 Δ 适中 + 早停。
 
 ## 6. 实验设计
 
 ### 6.1 Baselines
 1. **toxic-bert**（判别式）：`unitary/toxic-bert`，统计隐式漏报。
-2. **qwen-zeroshot**（通用生成式）：未微调 Qwen3-8B 零样本。
-3. **explicit-cot**（消融）：Phase 1 显式 CoT 模型（未内化）。
-4. **sft-no-dpo**（消融）：Phase 1 后未经 Phase 2，验证 DPO 对 FPR 贡献。
-5. **dpo-only**（消融）：Phase 2 DPO 后 LoRA 权重 + SFT 分类头，验证 DPO 对 TPR/FPR 的边际贡献。
-6. **implicit-cot**（本方法）：Phase 3 内化模型。
+2. **qwen-zeroshot**（通用生成式）：未微调 Qwen3-8B 零样本（关闭 thinking 模式，直接输出 JSON）。
+3. **sft-no-dpo**（消融）：Phase 1 SFT 模型（未对齐 DPO），验证 DPO 对 FPR 的贡献。
+4. **dpo-only**（消融）：Phase 2 DPO 后 LoRA 权重 + SFT 分类头，验证 DPO 对 TPR/FPR 的边际贡献。
 
+> Phase 3 隐式 CoT 内化（implicit-cot baseline）因时间约束未纳入本轮实验，列为 future work。
 > 原 `roberta-large` baseline 已移除：本任务以 LLM 内化为主路线，RoBERTa 蒸馏源保留为 Phase 1 可选增强，不作单独 baseline。
 
 ### 6.2 量化指标矩阵
@@ -118,7 +122,7 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 - **TPR (Recall)** = TP/(TP+FN)：隐式威胁找出率。
 - **F1 / Precision / Accuracy**。
 - **混淆矩阵**可视化（图 1）。
-- **计算效率**：显式 vs 隐式模型的推理延迟（mean/p95 ms）、Tokens/Second。
+- **计算效率**：各 baseline 的推理延迟（mean/p95 ms）、Tokens/Second。
 
 ### 6.3 质性评估（LLM-as-a-Judge）
 - **S1/S2 一致性**（Zheng et al. 2023）：S1 把 tie+不一致算 tie；S2 仅非 tie 样本。目标 S2≥80%。
@@ -128,21 +132,21 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 
 ## 7. 结果解释框架（待实验后填充）
 - 表 1：盲测 TPR/FPR/F1 对比（预期本方法碾压 toxic-bert）。
-- 表 2：推理延迟对比（Explicit vs Implicit CoT），证明内化后提速。
+- 表 2：各 baseline 推理延迟对比（mean/p95 ms、Tokens/Second）。
 - 图 1：混淆矩阵可视化 FPR 降低。
 - 质性图：LLM-judge 评分分布 + 偏差监控雷达图。
 
 ## 8. 伦理与局限
-- **Faithfulness 警示**（Zelikman et al. 2024）：隐式内化后无法保证隐状态推理可解释，forensic 场景需保留显式模型作为对照。
+- **Faithfulness 警示**（Zelikman et al. 2024）：隐式内化后无法保证隐状态推理可解释，forensic 场景需保留显式模型作为对照。（本轮未做内化，此风险暂不适用）
 - **Teacher 噪声**（Wen et al. 2023）：免费 LLM 标注含偏差，需人工抽检。
 - **n-gram 指标 inadequacy**（Hoang et al. 2024）：一对多解释关系不能仅靠 BLEU/ROUGE，必须配合 LLM-judge。
 - **Judge 偏差**（Zheng et al. 2023）：位置/冗长/自我增强偏差需监控与抑制。
-- **训练成本**（Deng et al. 2024）：Stepwise Internalization 移除速率过快导致不收敛，需 Δ 调参。
+- **训练成本**（Deng et al. 2024）：Stepwise Internalization 移除速率过快导致不收敛，需 Δ 调参。本轮 delta=8 不足以完成内化（仅移除 8 token vs thought 50-150 token），完整内化需加大 delta 并预留更多训练时间，列为 future work。
 - **数据范围**：DOJ 新闻稿覆盖的犯罪类型有限，泛化到全部网信犯罪需扩充种子。
 
 ## 9. 硬件与可复现性
-- 硬件：单张 RTX 4090 24GB。
-- 环境：conda env `ML`（包安装用 `conda install`，见 AGENTS.md）。
+- 硬件：单张 RTX 3090 24GB。
+- 环境：conda env `ML`（包安装用 `pip install` + 清华源，见 AGENTS.md）。
 - 随机种子：42（数据切分、训练、混合盲测集均统一）。
 - 配置：`configs/default.yaml` 集中管理所有超参。
-- 入口：`scripts/run_all.sh {synth|hardneg|pref|sft|dpo|implicit|blind|eval|all}`。
+- 入口：`python -m scripts.run_all [--from <stage>] [--only <stage>...] [--limit N]`。

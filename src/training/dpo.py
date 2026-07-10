@@ -94,18 +94,20 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
         save_strategy="epoch",
         eval_strategy="epoch",
         load_best_model_at_end=True,
-        metric_for_best_model="eval_reward_accuracies",
+        metric_for_best_model="eval_rewards/accuracies",
         greater_is_better=True,
         logging_steps=20,
         bf16=True,
         gradient_checkpointing=True,
-        peft_config=lora_cfg,
+        dataloader_num_workers=8,
+        dataloader_pin_memory=True,
     )
 
     from transformers import EarlyStoppingCallback
     trainer = DPOTrainer(
         model=model, args=trl_cfg, train_dataset=train_dataset,
         eval_dataset=eval_dataset, processing_class=tokenizer,
+        peft_config=lora_cfg,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=dpo_cfg.early_stopping_patience)],
     )
     trainer.train(resume_from_checkpoint=str(resume_ckpt) if resume_ckpt else None)

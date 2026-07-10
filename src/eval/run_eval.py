@@ -26,8 +26,10 @@ class EvalReport:
     predictions: list[dict] = field(default_factory=list)
 
 
-def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float = 0.5) -> EvalReport:
+def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float = 0.5, limit: Optional[int] = None) -> EvalReport:
     rows = load_blind_set(blind_csv)
+    if limit:
+        rows = rows[:limit]
     preds, labels, latencies = [], [], []
     predictions: list[dict] = []
     for r in tqdm(rows, desc=f"Eval {baseline.name}", unit="sample"):
@@ -50,7 +52,7 @@ def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float
     return EvalReport(baseline_name=baseline.name, binary=binary, latency=latency, predictions=predictions)
 
 
-def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None) -> Path:
+def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, limit: Optional[int] = None) -> Path:
     eval_cfg = cfg.eval
     names = baseline_names or eval_cfg.baselines
     blind_csv = (PROJECT_ROOT / eval_cfg.blind_csv).resolve()
@@ -61,7 +63,7 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None) 
     reports: list[dict] = []
     for name in names:
         baseline = _build_baseline(name, cfg)
-        rep = run_one_baseline(baseline, blind_csv, threshold=eval_cfg.threshold)
+        rep = run_one_baseline(baseline, blind_csv, threshold=eval_cfg.threshold, limit=limit)
         with open(out_dir / f"predictions_{name}.json", "w", encoding="utf-8") as f:
             json.dump(rep.predictions, f, ensure_ascii=False, indent=2)
         reports.append({
@@ -95,15 +97,12 @@ def _build_baseline(name: str, cfg: ExperimentConfig) -> Baseline:
         return ToxicBertBaseline()
     if name == "qwen-zeroshot":
         return QwenZeroShotBaseline(model_name=cfg.sft.base_model)
-    if name in ("explicit-cot", "sft-no-dpo", "implicit-cot", "dpo-only"):
-        ckpt_map = {
-            "explicit-cot": cfg.sft.output_dir,
-            "sft-no-dpo": cfg.sft.output_dir,
-            "implicit-cot": cfg.implicit_cot.output_dir,
-            "dpo-only": cfg.dpo.output_dir,
-        }
-        conditional = name == "implicit-cot"
-        return StudentBaseline(name, ckpt_map[name], cfg.sft, conditional_decoding=conditional)
+    if name in ("explicit-cot", "sft-no-dpo"):
+        return StudentBaseline("sft-no-dpo", cfg.sft.output_dir, cfg.sft, conditional_decoding=False)
+    if name == "dpo-only":
+        return StudentBaseline("dpo-only", cfg.dpo.output_dir, cfg.sft, conditional_decoding=False)
+    if name == "implicit-cot":
+        raise NotImplementedError("implicit-cot baseline 已退役（Phase 3 隐式内化改为 future work）")
     if name == "roberta-large":
         raise NotImplementedError("roberta-large 基线已移除（按决策不再训练 RoBERTa Teacher）")
     raise ValueError(f"未知 baseline: {name}")

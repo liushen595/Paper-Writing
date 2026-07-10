@@ -12,10 +12,11 @@ def main():
     ap = argparse.ArgumentParser(description="盲测集评估")
     ap.add_argument("--config", default="configs/default.yaml")
     ap.add_argument("--baselines", nargs="*", default=None, help="覆盖配置中的 baselines 列表")
+    ap.add_argument("--limit", type=int, default=None, help="限制盲测样本数（smoke test 用）")
     args = ap.parse_args()
     cfg = load_config(args.config)
     log = setup_logger(log_file=default_log_dir() / "eval.log")
-    run_eval(cfg, baseline_names=args.baselines)
+    run_eval(cfg, baseline_names=args.baselines, limit=args.limit)
 
 
 if __name__ == "__main__":

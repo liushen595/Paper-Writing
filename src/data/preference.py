@@ -64,7 +64,10 @@ def _judge_once(
         answer_b=b,
     )
     raw = client.chat([ChatMessage("system", JUDGE_SYSTEM), ChatMessage("user", user)], temperature=0.0, max_tokens=256)
-    obj = safe_json_extract(raw)
+    try:
+        obj = safe_json_extract(raw)
+    except (ValueError, json.JSONDecodeError):
+        obj = {}
     if obj.get("winner") not in ("A", "B", "tie"):
         obj["winner"] = "tie"
     return obj
