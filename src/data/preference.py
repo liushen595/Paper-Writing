@@ -181,6 +181,7 @@ def _batch_generate(
     max_seq_len: int = 1024,
     top_p: float = 0.95,
     batch_size: int = 16,
+    desc: str = "Generate",
 ) -> list[str]:
     """批量 GPU 推理：一次 generate() 处理多个 prompt，显著提升 GPU 利用率。
 
@@ -195,6 +196,8 @@ def _batch_generate(
 
     results: list[str] = []
     total = len(prompt_texts)
+    num_batches = (total + batch_size - 1) // batch_size
+    pbar = tqdm(total=num_batches, desc=desc, unit="batch")
     for start in range(0, total, batch_size):
         batch_texts = prompt_texts[start:start + batch_size]
         inputs = tokenizer(
@@ -217,6 +220,8 @@ def _batch_generate(
                 outputs[j][input_lens[j]:], skip_special_tokens=True,
             )
             results.append(gen)
+        pbar.update(1)
+    pbar.close()
 
     tokenizer.padding_side = original_side
     return results
@@ -375,7 +380,7 @@ def generate_candidates_only(
     ref_labels: list[str] = []
     ref_cots: list[str] = []
     prompt_texts: list[str] = []
-    for s in samples:
+    for s in tqdm(samples, desc="Template prompts", unit="sample"):
         p = s.get("implicit_threat") or s.get("text", "")
         prompts.append(p)
         ref_labels.append(s.get("label", "Threat"))
@@ -396,10 +401,12 @@ def generate_candidates_only(
     cands_low = _batch_generate(
         model.base, tokenizer, prompt_texts, temperature=temperatures[0],
         max_new_tokens=128, max_seq_len=sft_cfg.max_seq_len, batch_size=batch_size,
+        desc="Temp 0.3",
     )
     cands_high = _batch_generate(
         model.base, tokenizer, prompt_texts, temperature=temperatures[1],
         max_new_tokens=128, max_seq_len=sft_cfg.max_seq_len, batch_size=batch_size,
+        desc="Temp 1.0",
     )
 
     # 追加写入 JSONL
