@@ -14,7 +14,7 @@ import random
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 from tqdm import tqdm
 
@@ -224,7 +224,7 @@ def _batch_generate(
     return results
 
 
-def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tuple[float, ...] = (0.3, 1.0)) -> "callable":
+def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tuple[float, ...] = (0.3, 1.0)) -> Callable[[list[str], int], list[list[str]]]:
     """构造基于 SFT checkpoint 的批量候选生成器。
 
     对全部 prompt 先预计算 chat_template 文本，再按不同温度整批调用 _batch_generate，
