@@ -80,7 +80,7 @@ def _run_judge(limit: int | None, judge_model: str) -> None:
         sys.exit(1)
     for pred in pred_files:
         cmd = ["python", "-m", "scripts.run_judge_eval",
-               "--predictions", str(pred), "--judge", "glm", "--judge-model", judge_model]
+               "--predictions", str(pred), "--judge", "aliyun", "--judge-model", judge_model]
         if limit:
             cmd.extend(["--limit", str(limit)])
         _run(cmd, f"judge({pred.name})")
@@ -107,7 +107,7 @@ def main():
                     help=f"只跑指定阶段（可选: {', '.join(STAGES)})")
     ap.add_argument("--limit", type=int, default=None,
                     help="限制样本数，传给支持的阶段（sft/pref/eval/judge），用于 smoke test")
-    ap.add_argument("--judge-model", default="glm-4-flash",
+    ap.add_argument("--judge-model", default="qwen-plus",
                     help="LLM judge 模型名（默认 glm-4-flash）")
     args = ap.parse_args()
 
