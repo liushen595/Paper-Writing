@@ -19,6 +19,7 @@ from typing import Optional
 import torch
 from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from ..data.dataset import build_train_examples
 from ..models.student import StudentModel, load_tokenizer
@@ -130,7 +131,7 @@ def _evaluate_implicit_cot(model, val_cache, val_spans, collator, device, n_remo
     total_loss = 0.0
     n_batches = 0
     with torch.no_grad():
-        for i, base in enumerate(val_cache):
+        for i, base in enumerate(tqdm(val_cache, desc="Validate", unit="sample", leave=False)):
             new_ids, new_labels = apply_removal(base["input_ids"], base["labels_clm"], val_spans[i], n_remove, left=True)
             batch = collator([{"input_ids": new_ids, "labels_clm": new_labels, "labels_cls": base["labels_cls"]}])
             batch = {k: v.to(device) for k, v in batch.__dict__.items()}
@@ -215,7 +216,8 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
     for epoch in range(start_epoch, ic_cfg.num_epochs):
         epoch_indices = list(range(len(base_cache)))
         random.shuffle(epoch_indices)
-        for idx in epoch_indices:
+        pbar = tqdm(epoch_indices, desc=f"ImplicitCoT epoch {epoch+1}/{ic_cfg.num_epochs}", unit="sample")
+        for idx in pbar:
             t = global_step
             s = removal_schedule(t, T, ic_cfg.delta_per_epoch) + removal_smoothing_offset(ic_cfg.lambda_smoothing)
             if s > prev_s and ic_cfg.reset_optimizer_on_removal:
@@ -237,6 +239,7 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
                 optimizer.step()
                 optimizer.zero_grad()
             global_step += 1
+            pbar.set_postfix(s=s, loss=f"{loss.item():.4f}")
             if global_step % 50 == 0:
                 log.info(f"epoch={epoch} step={global_step} s={s} loss={loss.item():.4f}")
 

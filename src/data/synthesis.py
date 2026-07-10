@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from tqdm import tqdm
+
 from ..utils.config import DataConfig
 from ..utils.env import PROJECT_ROOT
 from ..utils.logging import get_logger
@@ -248,8 +250,7 @@ def _run_sequential(
     data_cfg: DataConfig,
 ) -> None:
     total_ok = 0
-    for i, rec in enumerate(records):
-        log.info(f"处理进度 [{i+1}/{len(records)}]")
+    for i, rec in enumerate(tqdm(records, desc="Synthesis", unit="rec")):
         synth = synthesize_one(client, rec)
         if synth is not None:
             total_ok += 1
@@ -281,7 +282,7 @@ def _run_parallel(
         futures = {pool.submit(_proc, rec): rec for rec in records}
         done = 0
         total = len(futures)
-        for future in as_completed(futures):
+        for future in tqdm(as_completed(futures), total=total, desc="Synthesis", unit="rec"):
             done += 1
             rec = futures[future]
             try:

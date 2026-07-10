@@ -12,6 +12,7 @@ from typing import Optional
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from ..data.dataset import build_train_examples
 from ..models.student import StudentModel, load_tokenizer
@@ -41,7 +42,7 @@ def _evaluate(model: StudentModel, loader: DataLoader, device: torch.device) -> 
     total_loss = 0.0
     n_batches = 0
     with torch.no_grad():
-        for batch in loader:
+        for batch in tqdm(loader, desc="Validate", unit="batch", leave=False):
             batch = {k: v.to(device) for k, v in batch.__dict__.items()}
             outputs = model(
                 input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
@@ -109,7 +110,8 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
     min_delta = sft_cfg.early_stopping_min_delta
 
     for epoch in range(start_epoch, sft_cfg.num_epochs):
-        for batch in loader:
+        pbar = tqdm(loader, desc=f"SFT epoch {epoch+1}/{sft_cfg.num_epochs}", unit="batch")
+        for batch in pbar:
             batch = {k: v.to(device) for k, v in batch.__dict__.items()}
             outputs = model(
                 input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
@@ -126,6 +128,7 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
                 optimizer.step()
                 optimizer.zero_grad()
             global_step += 1
+            pbar.set_postfix(loss=f"{loss.item():.4f}", cls=f"{outputs['cls_loss'].item():.4f}", clm=f"{outputs['clm_loss'].item():.4f}")
             if global_step % 20 == 0:
                 log.info(f"epoch={epoch} step={global_step}/{total_steps} loss={loss.item():.4f} "
                          f"cls={outputs['cls_loss'].item():.4f} clm={outputs['clm_loss'].item():.4f}")

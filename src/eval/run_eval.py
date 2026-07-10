@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from tqdm import tqdm
+
 from ..utils.config import EvalConfig, ExperimentConfig
 from ..utils.env import PROJECT_ROOT
 from ..utils.logging import get_logger
@@ -28,7 +30,7 @@ def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float
     rows = load_blind_set(blind_csv)
     preds, labels, latencies = [], [], []
     predictions: list[dict] = []
-    for r in rows:
+    for r in tqdm(rows, desc=f"Eval {baseline.name}", unit="sample"):
         text = r.get("text", "")
         gt_label = r.get("label", "Safe")
         pred = baseline.predict(text)
