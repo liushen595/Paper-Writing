@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
+from tqdm import tqdm
 from torch.utils.data import Dataset
 
 from ..data.dataset import TrainExample, SYSTEM_PROMPT_SFT, INSTRUCTION_TEMPLATE, label_to_id
@@ -55,7 +56,7 @@ class SFTDataset(Dataset):
         self._build()
 
     def _build(self):
-        for ex in self.examples:
+        for ex in tqdm(self.examples, desc="Building SFT dataset", unit="sample"):
             full, prompt = format_chat(ex, self.tokenizer)
             full_ids = self.tokenizer(full, truncation=True, max_length=self.max_seq_len, add_special_tokens=False)["input_ids"]
             prompt_ids = self.tokenizer(prompt, truncation=True, max_length=self.max_seq_len, add_special_tokens=False)["input_ids"]

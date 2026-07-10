@@ -25,6 +25,8 @@ import json
 import random
 from pathlib import Path
 
+from tqdm import tqdm
+
 from src.utils.env import PROJECT_ROOT
 from src.utils.logging import get_logger, setup_logger, default_log_dir
 from src.utils.seed import set_seed
@@ -75,7 +77,7 @@ def main():
     skipped_lang = 0
     skipped_len = 0
     skipped_empty = 0
-    for row in ds:
+    for row in tqdm(ds, desc="Filtering WildChat", unit="row"):
         if row.get("redacted", False):
             skipped_redacted += 1
             continue

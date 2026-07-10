@@ -34,7 +34,7 @@ class Baseline:
         raise NotImplementedError
 
     def predict_batch(self, texts: list[str]) -> list[Prediction]:
-        return [self.predict(t) for t in texts]
+        return [self.predict(t) for t in tqdm(texts, desc=f"Eval {self.name}", unit="sample")]
 
 
 class ToxicBertBaseline(Baseline):
@@ -65,7 +65,7 @@ class ToxicBertBaseline(Baseline):
         import time, torch
         t_start = time.perf_counter()
         results: list[Prediction] = []
-        for i in range(0, len(texts), batch_size):
+        for i in tqdm(range(0, len(texts), batch_size), desc="Eval toxic-bert", unit="batch"):
             batch = texts[i:i + batch_size]
             enc = self.tok(batch, return_tensors="pt", truncation=True, max_length=512, padding=True).to(self.device)
             with torch.no_grad():

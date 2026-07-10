@@ -115,7 +115,7 @@ def _build_val_cache(val_examples, tokenizer, max_seq_len):
     """构建验证集缓存。"""
     cache = []
     spans = []
-    for ex in val_examples:
+    for ex in tqdm(val_examples, desc="Building val cache", unit="sample"):
         full, _ = format_chat(ex, tokenizer)
         full_ids = tokenizer(full, truncation=True, max_length=max_seq_len, add_special_tokens=False)["input_ids"]
         labels_clm = list(full_ids)
@@ -169,7 +169,7 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
     # 预计算每个样本的 thought span
     base_cache: list[dict] = []
     spans: list[tuple[int, int]] = []
-    for ex in examples:
+    for ex in tqdm(examples, desc="Precomputing thought spans", unit="sample"):
         full, _ = format_chat(ex, tokenizer)
         full_ids = tokenizer(full, truncation=True, max_length=ic_cfg.max_seq_len, add_special_tokens=False)["input_ids"]
         labels_clm = list(full_ids)
