@@ -60,4 +60,8 @@ RUN python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cud
 
 WORKDIR /workspace
 
+COPY zellij /usr/local/bin/zellij
+
+RUN chmod +x /usr/local/bin/zellij
+
 CMD ["bash"]

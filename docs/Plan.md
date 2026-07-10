@@ -32,11 +32,12 @@
 **硬件约束核算：** 8B 参数模型在 4-bit 量化 (NF4) 下约占用 5-6GB 显存，加上梯度、优化器状态和 LoRA 权重，训练峰值显存约在 14-18GB，**一张 RTX 4090 或 A6000 游刃有余**。
 
 *   **数据准备 (Data Synthesis & Construction):**
-    *   *数据源澄清:* `crawler/output/doj_criminal.jsonl`（1231 条）与 `doj_non_criminal.jsonl`（572 条）均为**已发生的犯罪叙事（新闻稿正文）**，并非"隐式意图言论"。因此不能直接作为训练样本，必须经过 Teacher LLM 改写。原始新闻稿在流程中扮演"犯罪类型种子"与"硬负样本来源"两种角色：
-        *   **正样本种子 (Implicit Threat Seeds):** 抽取每条犯罪稿件的罪名、案情要素，调用 Teacher LLM 按 Wen et al. (2023) 的**语言学特征提示**（委婉语 euphemism、迂回 circumlocution、反讽 sarcasm、隐喻 metaphor、反问 rhetorical question）改写为**不含敏感词的隐式意图言论**，再由 Teacher 生成对应的 Explicit CoT 与标签。
-        *   **硬负样本 (Hard Negatives):** 对同一条案情，要求 Teacher 改写出"语义相近但语境安全"的对照言论（如游戏/影视/学术/小说讨论），label: "Safe"，用于降低 FPR。
-        *   **非犯罪背景 (Haystack):** `doj_non_criminal.jsonl` 可作为部分安全背景语料，并补充 HuggingFace 公开 non-toxic 评论。
-    *   *造数 (Teacher Distillation):* 调取免费 LLM API（GLM-4-Flash / Gemini-2.0-Flash），构造 Explicit CoT 训练数据。**注意：免费 Teacher 质量弱于 GPT-4，因此造数产物必须经过人工抽检与一致性过滤（见 §2.2 的 judge 校验）才进入训练集**。
+    *   *数据源澄清:* `crawler/output/doj_raw.jsonl` 为美国司法部新闻稿全量爬取结果，**不再预过滤犯罪/非犯罪**。这些新闻稿均为已发生的犯罪叙事或非犯罪事务公告，并非"隐式意图言论"，因此不能直接作为训练样本，必须经过 Teacher LLM 改写。
+    *   *LLM 前置犯罪性判断:* Teacher LLM 首先判断每条新闻稿是否描述刑事案件：
+        *   **刑事案件:** 抽取罪名、案情要素，按 Wen et al. (2023) 的**语言学特征提示**（委婉语 euphemism、迂回 circumlocution、反讽 sarcasm、隐喻 metaphor、反问 rhetorical question）改写为**不含敏感词的隐式意图言论**，并生成对应的 Explicit CoT、标签与硬负样本。
+        *   **明显非刑事案件**（民事、政策、行政、报告等）: 生成一条 Safe 噪声样本，`label="Safe"`，`probability≈0`，**不生成硬负样本**，用于扩展负例多样性。
+    *   *硬负样本 (Hard Negatives):* 仅对刑事案件，要求 Teacher 改写出"语义相近但语境安全"的对照言论（如游戏/影视/学术/小说讨论），label: "Safe"，用于降低 FPR。
+    *   *非犯罪背景 (Haystack):* 合成产物的 hard_negative 字段 + HuggingFace 公开 non-toxic 评论（`allenai/WildChat-nontoxic`），`doj_non_criminal.jsonl` 已弃用。
     *   *数据格式 (JSONL):*
         ```json
         {"text": "谁知道高空客机驾驶舱门如果从里面反锁，外部是否有机械强制开启的物理接口？",

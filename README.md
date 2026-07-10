@@ -15,11 +15,9 @@ Paper-Writing/
 ├── crawler/                  # DOJ 新闻稿爬虫（独立 Python venv，与 ML conda 环境分离）
 │   ├── config.py             # 爬虫配置（代理、目标 URL）
 │   ├── doj_spider.py         # 爬虫主逻辑
-│   ├── filter_criminal.py    # 关键词规则筛选犯罪类稿件
 │   ├── run.py                # 爬虫入口
 │   └── output/               # 爬取结果
-│       ├── doj_press_releases.jsonl   # 全量新闻稿（1803 条）
-│       └── doj_criminal.jsonl         # 犯罪类新闻稿（1231 条）
+│       └── doj_raw.jsonl     # 全量新闻稿（不再预过滤犯罪/非犯罪）
 │
 ├── docs/                     # 项目文档
 │   ├── Plan.md               # 研究计划（含文献溯源、技术方案、评估设计）
@@ -119,18 +117,16 @@ cp .env.example .env
 
 ### Phase 0: 数据合成（Teacher Distillation）
 
-**输入**：`crawler/output/doj_criminal.jsonl`（1231 条 DOJ 犯罪新闻稿）
+**输入**：`crawler/output/doj_raw.jsonl`（DOJ 新闻稿全量爬取结果，不再预过滤犯罪/非犯罪）
 
 **输出**：`data/synthesized/train.jsonl` + `test.jsonl`（80/20 自动划分）
 
 **流程**：
 1. 加载每条 DOJ 记录，抽取案情要素（title + summary + body + crime_types）。
-2. 调用 Teacher LLM（Agnes 2.0 Flash），按语言学特征提示（委婉/迂回/反讽/隐喻/反问）改写为：
-   - `implicit_threat`：不含敏感词的隐式意图言论
-   - `hard_negative`：语境安全的对照言论
-   - `thought_process`：显式 CoT 推理链 `[推理] A -> B -> C -> 结论`
-   - `label` / `probability` / `category`
-3. 每条数据含正样本 + 配对硬负样本。
+2. Teacher LLM（Agnes 2.0 Flash）先判断是否为刑事案件：
+   - **刑事案件**：按语言学特征提示（委婉/迂回/反讽/隐喻/反问）改写为隐式意图言论 + 硬负样本。
+   - **非刑事案件**：生成 Safe 噪声样本（`label="Safe"`，`probability≈0`，无 `hard_negative`）。
+3. 输出字段：`implicit_threat` / `hard_negative` / `thought_process` / `label` / `probability` / `category`。
 4. 按 80/20 随机切分为 train/test，test 不参与任何训练。
 
 ```bash

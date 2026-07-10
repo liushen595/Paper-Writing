@@ -31,16 +31,22 @@
 ## 3. 数据
 
 ### 3.1 数据来源
-- **源数据**：`crawler/output/doj_criminal.jsonl`（1231 条美国司法部犯罪新闻稿）+ `doj_non_criminal.jsonl`（572 条非犯罪稿）。
-- **关键澄清**：DOJ 新闻稿是**已发生的犯罪叙事**，并非"隐式意图言论"，不能直接作为训练样本。
+- **源数据**：`crawler/output/doj_raw.jsonl`（美国司法部新闻稿全量爬取结果，不再预过滤犯罪/非犯罪）。
+- **关键澄清**：DOJ 新闻稿是**已发生的犯罪叙事或非犯罪事务公告**，并非"隐式意图言论"，不能直接作为训练样本。
 
 ### 3.2 数据合成（Phase 0，Teacher Distillation）
-1. 从 DOJ 记录抽取案情要素（罪名类型、标题、摘要）。
-2. 调用免费 Teacher LLM API（GLM-4-Flash / Gemini-2.0-Flash），按 Wen et al. (2023) 的**语言学特征提示**（委婉 euphemism / 迂回 circumlocution / 反讽 sarcasm / 隐喻 metaphor / 反问 rhetorical question）改写为：
-   - `implicit_threat`：不含敏感词的隐式意图言论（正样本）。
-   - `hard_negative`：话题相近、词汇相近但语境安全的对照言论（硬负样本）。
-   - `thought_process`：显式 CoT 推理链 `[推理] A -> B -> C -> 结论`。
-    - `label` / `probability` / `category`。其中 `probability` 为 Teacher 在造数时给出的弱参考置信，**不进入训练损失**（SFT 用 `label` 做 $\mathcal{L}_{cls}$、用 `thought_process+label` 文本做 $\mathcal{L}_{clm}$）；评估阶段判别阈值（>0.5）使用 Student 分类头输出的 sigmoid 概率，而非该字段。
+1. 从 `doj_raw.jsonl` 加载全量 DOJ 记录，抽取案情要素（罪名类型、标题、摘要）。
+2. 调用免费 Teacher LLM API（GLM-4-Flash / Gemini-2.0-Flash）。LLM 首先判断新闻稿是否为刑事案件：
+   - **刑事案件**：按 Wen et al. (2023) 的**语言学特征提示**（委婉 euphemism / 迂回 circumlocution / 反讽 sarcasm / 隐喻 metaphor / 反问 rhetorical question）改写为：
+     - `implicit_threat`：不含敏感词的隐式意图言论（正样本）。
+     - `hard_negative`：话题相近、词汇相近但语境安全的对照言论（硬负样本）。
+     - `thought_process`：显式 CoT 推理链 `[推理] A -> B -> C -> 结论`。
+     - `label` / `probability` / `category`；其中 `label="Threat"`，`probability` 为 Teacher 给出的置信（不进入训练损失）。
+   - **明显非刑事案件**（民事、政策、行政、报告等）：直接生成一条 Safe 噪声样本：
+     - `implicit_threat`：复用为中性/安全文本（作为 Safe 训练样本的输入文本）。
+     - `hard_negative`：空字符串（非犯罪记录不生成硬负样本）。
+     - `thought_process`：说明其为非犯罪事务、无犯罪意图。
+     - `label="Safe"`，`probability≈0`，`category="NonCriminal"`。
 3. 按 80/20 切分 train/test，test 不参与任何训练。
 4. **质量保障**：免费 Teacher 弱于 GPT-4，造数产物须经人工抽检 + judge 一致性过滤才进入训练集。
 

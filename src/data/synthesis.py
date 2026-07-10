@@ -1,12 +1,11 @@
-"""Phase 0 造数：用 Teacher LLM 把 DOJ 犯罪叙事改写为隐式意图言论 + Explicit CoT。
+"""Phase 0 造数：用 Teacher LLM 处理 DOJ 新闻稿，生成训练数据。
 
-流程（参照 Wen et al. 2023 的语言学特征提示 + ToXCL 的犯罪类别生成）:
-  1. 从 DOJ 记录抽取案情要素（crime_types / title / summary / body）。
-  2. Teacher LLM 生成:
-     a) implicit_threat: 不含敏感词的隐式意图言论（应用 euphemism/circumlocution/sarcasm/metaphor/rhetorical-question）。
-     b) hard_negative: 语义相近但语境安全的对照言论。
-     c) thought_process: 显式 CoT 推理链。
-     d) label / probability / category。
+流程：
+  1. 从全量 DOJ 记录（不再预过滤犯罪/非犯罪）抽取 title / summary / body。
+  2. Teacher LLM 首先判断该新闻稿是否描述刑事案件。
+     - 若是，按 Wen et al. 2023 的语言学特征提示改写为隐式意图言论 + 硬负样本。
+     - 若是明显的非刑事案件（民事、政策、行政等），生成一条 Safe 噪声样本
+       （probability≈0，无 hard_negative），用于扩展负例多样性。
   3. 写入 data/synthesized/train.jsonl 与 test.jsonl（按 seed 切分，test 不参与训练）。
 """
 from __future__ import annotations
@@ -28,31 +27,40 @@ from .llm_client import ChatMessage, BaseClient, build_client, safe_json_extract
 log = get_logger("synthesis")
 
 
-SYSTEM_PROMPT = """You are a criminal-intent data synthesis expert. Your task is to rewrite a given U.S. Department of Justice (DOJ) press release into an "implicit criminal intent utterance" with its accompanying reasoning chain, used to train a small language model to recognize implicit threats.
+SYSTEM_PROMPT = """You are a criminal-intent data synthesis expert. Your task is to process U.S. Department of Justice (DOJ) press releases and produce training data for a small language model to recognize implicit criminal intent.
 
-You MUST strictly follow these rules:
-1. implicit_threat must be a single sentence that **an ordinary person might post online**. It must **NOT contain any sensitive or criminal keywords** (e.g., kill, bomb, poison, gun, rob, drug names, etc.). It MUST express criminal intent through one of: euphemism, circumlocution, sarcasm, metaphor, or rhetorical question.
-2. hard_negative must be a sentence that is **topically similar** to implicit_threat but has an **obviously safe context** (e.g., gaming, movie, academic, fiction, hypothetical scenario). Used to reduce false positive rate.
-3. thought_process is an explicit chain-of-thought reasoning in the format: "[Reasoning] A -> B -> C -> Conclusion", step by step inferring intent from context.
-4. label is either "Threat" or "Safe"; probability is 0.0-1.0; category is chosen from the given list or self-defined.
+For each input, FIRST decide whether the press release describes a criminal case (e.g., conviction, sentencing, indictment, arrest, guilty plea, criminal charges).
 
-**Output ONLY a JSON object. No extra text, no markdown code blocks. All content must be in English.**"""
+Branch A — Criminal case:
+1. implicit_threat must be a single sentence that an ordinary person might post online. It must NOT contain sensitive or criminal keywords (e.g., kill, bomb, poison, gun, rob, drug names). It MUST express criminal intent through one of: euphemism, circumlocution, sarcasm, metaphor, or rhetorical question.
+2. hard_negative must be a sentence topically similar to implicit_threat but with an obviously safe context (e.g., gaming, movie, academic, fiction, hypothetical scenario). Used to reduce false positive rate.
+3. thought_process is an explicit chain-of-thought in the format: "[Reasoning] A -> B -> C -> Conclusion", inferring intent step by step.
+4. label is "Threat"; probability is a calibrated confidence 0.0-1.0 (vary by case clarity, do NOT hardcode a constant); category is the crime type.
+
+Branch B — Non-criminal case (civil lawsuit, policy announcement, administrative appointment, report, public comment request, etc.):
+1. implicit_threat should be a brief neutral summary or obviously safe utterance based on the press release content (this field is reused as the text of a Safe training sample).
+2. hard_negative must be an empty string "". Do NOT generate a hard negative for non-criminal cases.
+3. thought_process should state that the press release concerns a non-criminal matter and therefore has no criminal intent.
+4. label is "Safe"; probability is 0.0 or extremely low (0.0-0.05); category is "NonCriminal".
+
+Output ONLY a JSON object. No extra text, no markdown code blocks. All content must be in English."""
 
 
-USER_TEMPLATE = """DOJ Case Elements:
+USER_TEMPLATE = """DOJ Press Release:
 - Title: {title}
 - Summary: {summary}
 - Body: {body}
-- Crime Types: {crime_types}
+- Crime Types (heuristic only): {crime_types}
 
-Output the following JSON (no markdown code blocks, all content in English):
+Step 1: Decide whether this press release describes a criminal case.
+Step 2: Output exactly the following JSON according to the criminal/non-criminal branch (no markdown code blocks, all content in English):
 {{
-  "implicit_threat": "<implicit intent utterance without sensitive keywords>",
-  "hard_negative": "<safe-context utterance>",
-  "thought_process": "[Reasoning] ... -> ... -> This constitutes a high-risk implicit intent.",
-  "label": "Threat",
-  "probability": <your calibrated confidence in 0.0-1.0; vary by case clarity, do NOT hardcode a constant>,
-  "category": "<e.g. Cyber/Narcotics/Aviation/Fraud/Violence/...>"
+  "implicit_threat": "<Branch A: implicit intent utterance without sensitive keywords; Branch B: brief neutral safe summary>",
+  "hard_negative": "<Branch A: safe-context utterance; Branch B: empty string>",
+  "thought_process": "[Reasoning] ... -> ... -> Conclusion",
+  "label": "<Threat or Safe>",
+  "probability": "<calibrated 0.0-1.0; use 0.0 or near 0.0 for Safe>",
+  "category": "<crime type or NonCriminal>"
 }}"""
 
 
@@ -122,6 +130,7 @@ def run_synthesis(
     provider_name: Optional[str] = None,
     model: Optional[str] = None,
     limit: Optional[int] = None,
+    start: int = 0,
     overwrite: bool = False,
     append: bool = False,
 ) -> None:
@@ -142,8 +151,11 @@ def run_synthesis(
         train_path.unlink(missing_ok=True)
         test_path.unlink(missing_ok=True)
 
-    criminal_path = (PROJECT_ROOT / data_cfg.raw_criminal).resolve()
-    records = load_doj_records(criminal_path, limit=limit)
+    raw_doj_path = (PROJECT_ROOT / data_cfg.raw_doj).resolve()
+    records = load_doj_records(raw_doj_path, limit=limit)
+    if start > 0:
+        records = records[start:]
+        log.info(f"跳过前 {start} 条，剩余待合成: {len(records)}")
     log.info(f"待合成 DOJ 记录数: {len(records)}")
 
     client = build_client(provider_name=provider_name, model=model)

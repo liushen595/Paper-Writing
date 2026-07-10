@@ -17,7 +17,7 @@ START_URL = "https://www.justice.gov/news/press-releases"
 # 所有输出文件均在 output/ 目录下
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "doj_press_releases.jsonl")
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "doj_raw.jsonl")
 CRAWL_DIR = os.path.join(OUTPUT_DIR, "crawl_checkpoint")
 CACHE_DIR = os.path.join(OUTPUT_DIR, ".scrapling_cache")  # development mode 缓存
 

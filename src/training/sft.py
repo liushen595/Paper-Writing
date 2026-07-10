@@ -1,7 +1,8 @@
 """Phase 1 SFT 训练循环：联合损失 alpha*L_cls + beta*L_clm。
 
-支持断点续训：checkpoint 按 epoch 编号保存，resume 时自动从最新 checkpoint 继续。
+支持断点续训与早停：checkpoint 按 epoch 编号保存，resume 时自动从最新 checkpoint 继续。
 num_epochs 为总轮数，resume 时跳过已完成的 epoch。
+早停基于验证集 loss，连续 patience 个 epoch 无改善则终止。
 """
 from __future__ import annotations
 
@@ -34,6 +35,24 @@ def _find_latest_checkpoint(ckpt_dir: Path) -> tuple[Optional[Path], int]:
     return latest, completed_epochs
 
 
+def _evaluate(model: StudentModel, loader: DataLoader, device: torch.device) -> float:
+    """在验证集上计算平均 total loss (cls + clm)。"""
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    with torch.no_grad():
+        for batch in loader:
+            batch = {k: v.to(device) for k, v in batch.__dict__.items()}
+            outputs = model(
+                input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
+                labels_clm=batch["labels_clm"], labels_cls=batch["labels_cls"],
+            )
+            total_loss += outputs["cls_loss"].item() + outputs["clm_loss"].item()
+            n_batches += 1
+    model.train()
+    return total_loss / max(1, n_batches)
+
+
 def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split: str = "train") -> Path:
     sft_cfg = sft_cfg or cfg.sft
     set_seed(cfg.seed)
@@ -48,6 +67,14 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
     collator = SFTCollator(tokenizer, max_seq_len=sft_cfg.max_seq_len)
     loader = DataLoader(
         dataset, batch_size=sft_cfg.per_device_batch_size, shuffle=True,
+        collate_fn=collator, num_workers=2, pin_memory=True,
+    )
+
+    # 验证集
+    val_examples = build_train_examples(cfg.data, split="test")
+    val_dataset = SFTDataset(val_examples, tokenizer, max_seq_len=sft_cfg.max_seq_len)
+    val_loader = DataLoader(
+        val_dataset, batch_size=sft_cfg.per_device_batch_size, shuffle=False,
         collate_fn=collator, num_workers=2, pin_memory=True,
     )
 
@@ -76,6 +103,11 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
     warmup = int(sft_cfg.warmup_ratio * total_steps)
     global_step = start_epoch * steps_per_epoch
 
+    best_val_loss = float("inf")
+    patience_counter = 0
+    patience = sft_cfg.early_stopping_patience
+    min_delta = sft_cfg.early_stopping_min_delta
+
     for epoch in range(start_epoch, sft_cfg.num_epochs):
         for batch in loader:
             batch = {k: v.to(device) for k, v in batch.__dict__.items()}
@@ -103,7 +135,21 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
         model.save(ckpt_path)
         log.info(f"epoch {epoch} 完成, checkpoint 保存到 {ckpt_path}")
 
-    # 最终保存为 adapter_model 目录（兼容 PeftModel.from_pretrained）
+        # 验证 + 早停
+        val_loss = _evaluate(model, val_loader, device)
+        log.info(f"epoch {epoch} 验证 loss={val_loss:.4f} (best={best_val_loss:.4f}, patience={patience_counter}/{patience})")
+        if val_loss < best_val_loss - min_delta:
+            best_val_loss = val_loss
+            patience_counter = 0
+            best_path = out_dir / "best"
+            model.save(best_path)
+            log.info(f"验证 loss 改善, 保存 best 模型到 {best_path}")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                log.info(f"早停触发: 连续 {patience} 个 epoch 验证 loss 无改善, 终止训练")
+                break
+
     model.save(out_dir)
     log.info(f"SFT 训练完成, 最终模型保存到 {out_dir}")
     return out_dir

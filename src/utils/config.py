@@ -13,7 +13,7 @@ from .env import PROJECT_ROOT
 
 @dataclass
 class DataConfig:
-    raw_criminal: str = "crawler/output/doj_criminal.jsonl"
+    raw_doj: str = "crawler/output/doj_raw.jsonl"
     synthesized_dir: str = "data/synthesized"
     preference_dir: str = "data/preference"
     blind_dir: str = "data/blind"
@@ -37,12 +37,14 @@ class SFTConfig:
     cls_loss_weight: float = 1.0   # alpha
     clm_loss_weight: float = 1.0   # beta
     use_roberta_distill: bool = False
-    learning_rate: float = 2e-4
+    learning_rate: float = 5e-5
     num_epochs: int = 3
     per_device_batch_size: int = 4
     gradient_accumulation_steps: int = 4
     warmup_ratio: float = 0.03
     max_seq_len: int = 1024
+    early_stopping_patience: int = 3
+    early_stopping_min_delta: float = 1e-4
     output_dir: str = "checkpoints/sft"
 
 
@@ -55,6 +57,8 @@ class DPOConfig:
     gradient_accumulation_steps: int = 8
     max_prompt_len: int = 256
     max_length: int = 1024
+    early_stopping_patience: int = 2
+    early_stopping_min_delta: float = 1e-5
     output_dir: str = "checkpoints/dpo"
 
 
@@ -70,6 +74,8 @@ class ImplicitCoTConfig:
     per_device_batch_size: int = 4
     gradient_accumulation_steps: int = 4
     max_seq_len: int = 1024
+    early_stopping_patience: int = 3
+    early_stopping_min_delta: float = 1e-4
     output_dir: str = "checkpoints/implicit_cot"
 
 

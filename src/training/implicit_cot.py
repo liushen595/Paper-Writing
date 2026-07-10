@@ -1,10 +1,11 @@
 """Phase 3 Stepwise Internalization（Deng et al. 2024）。
 
-支持断点续训：checkpoint 按 epoch 编号，resume 时恢复 removal state。
+支持断点续训与早停：checkpoint 按 epoch 编号，resume 时恢复 removal state。
 num_epochs 为总轮数。
 
 核心：从显式 CoT 模型出发，按线性调度逐步移除 CoT token 并微调。
 稳定性三件套：Removal Smoothing (lambda=4)、优化器重置、左移除。
+早停基于验证集 loss，连续 patience 个 epoch 无改善则终止。
 """
 from __future__ import annotations
 
@@ -109,6 +110,40 @@ def _load_ckpt_state(out_dir: Path) -> tuple[int, int]:
     return 0, 0
 
 
+def _build_val_cache(val_examples, tokenizer, max_seq_len):
+    """构建验证集缓存。"""
+    cache = []
+    spans = []
+    for ex in val_examples:
+        full, _ = format_chat(ex, tokenizer)
+        full_ids = tokenizer(full, truncation=True, max_length=max_seq_len, add_special_tokens=False)["input_ids"]
+        labels_clm = list(full_ids)
+        span = _locate_thought_span(full_ids, tokenizer)
+        spans.append(span)
+        cache.append({"input_ids": full_ids, "labels_clm": labels_clm, "labels_cls": 1 if ex.label == "Threat" else 0})
+    return cache, spans
+
+
+def _evaluate_implicit_cot(model, val_cache, val_spans, collator, device, n_remove):
+    """在验证集上计算平均 loss，使用当前 removal level。"""
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    with torch.no_grad():
+        for i, base in enumerate(val_cache):
+            new_ids, new_labels = apply_removal(base["input_ids"], base["labels_clm"], val_spans[i], n_remove, left=True)
+            batch = collator([{"input_ids": new_ids, "labels_clm": new_labels, "labels_cls": base["labels_cls"]}])
+            batch = {k: v.to(device) for k, v in batch.__dict__.items()}
+            outputs = model(
+                input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
+                labels_clm=batch["labels_clm"], labels_cls=batch["labels_cls"],
+            )
+            total_loss += outputs["clm_loss"].item() + outputs["cls_loss"].item()
+            n_batches += 1
+    model.train()
+    return total_loss / max(1, n_batches)
+
+
 def _find_latest_checkpoint(ckpt_dir: Path) -> tuple[Optional[Path], int]:
     if not ckpt_dir.exists():
         return None, 0
@@ -144,6 +179,10 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
     out_dir = Path(ic_cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 验证集
+    val_examples = build_train_examples(cfg.data, split="test")
+    val_cache, val_spans = _build_val_cache(val_examples, tokenizer, ic_cfg.max_seq_len)
+
     # 断点续训
     latest_ckpt, start_epoch = _find_latest_checkpoint(out_dir)
     removed_so_far = 0
@@ -167,6 +206,11 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
     T = len(base_cache) * ic_cfg.num_epochs
     global_step = start_epoch * len(base_cache)
     prev_s = removed_so_far
+
+    best_val_loss = float("inf")
+    patience_counter = 0
+    patience = ic_cfg.early_stopping_patience
+    min_delta = ic_cfg.early_stopping_min_delta
 
     for epoch in range(start_epoch, ic_cfg.num_epochs):
         epoch_indices = list(range(len(base_cache)))
@@ -201,6 +245,22 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
         model.save(ckpt_path)
         _save_ckpt_state(ckpt_path, epoch + 1, prev_s)
         log.info(f"epoch {epoch} 完成, checkpoint 保存到 {ckpt_path}, 当前移除数 s={prev_s}")
+
+        # 验证 + 早停
+        val_loss = _evaluate_implicit_cot(model, val_cache, val_spans, collator, device, prev_s)
+        log.info(f"epoch {epoch} 验证 loss={val_loss:.4f} (best={best_val_loss:.4f}, patience={patience_counter}/{patience})")
+        if val_loss < best_val_loss - min_delta:
+            best_val_loss = val_loss
+            patience_counter = 0
+            best_path = out_dir / "best"
+            model.save(best_path)
+            _save_ckpt_state(best_path, epoch + 1, prev_s)
+            log.info(f"验证 loss 改善, 保存 best 模型到 {best_path}")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                log.info(f"早停触发: 连续 {patience} 个 epoch 验证 loss 无改善, 终止训练")
+                break
 
     model.save(out_dir)
     log.info(f"Stepwise Internalization 完成, 模型保存到 {out_dir}")

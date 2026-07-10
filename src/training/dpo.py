@@ -1,7 +1,8 @@
 """Phase 2 DPO 训练：基于 trl.DPOTrainer + QLoRA。
 
-支持断点续训：从最新 checkpoint 恢复。
+支持断点续训与早停：从最新 checkpoint 恢复。
 DPO beta 起始 0.1（来自 Wen et al. 2023 KL 系数经验甜点）。
+早停基于验证集 reward accuracy，连续 patience 个 epoch 无改善则终止。
 """
 from __future__ import annotations
 
@@ -69,6 +70,12 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
     )
 
     dataset = build_dpo_dataset(cfg)
+    # 划分训练集/验证集 (90/10)
+    split = dataset.train_test_split(test_size=0.1, seed=cfg.seed)
+    train_dataset = split["train"]
+    eval_dataset = split["test"]
+    log.info(f"DPO 数据集: train={len(train_dataset)}, eval={len(eval_dataset)}")
+
     out_dir = Path(dpo_cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -85,13 +92,21 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
         max_length=dpo_cfg.max_length,
         output_dir=str(out_dir),
         save_strategy="epoch",
+        eval_strategy="epoch",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_reward_accuracies",
+        greater_is_better=True,
         logging_steps=20,
         bf16=True,
         gradient_checkpointing=True,
         peft_config=lora_cfg,
     )
+
+    from transformers import EarlyStoppingCallback
     trainer = DPOTrainer(
-        model=model, args=trl_cfg, train_dataset=dataset, processing_class=tokenizer,
+        model=model, args=trl_cfg, train_dataset=train_dataset,
+        eval_dataset=eval_dataset, processing_class=tokenizer,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=dpo_cfg.early_stopping_patience)],
     )
     trainer.train(resume_from_checkpoint=str(resume_ckpt) if resume_ckpt else None)
     trainer.save_model(str(out_dir))

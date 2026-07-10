@@ -3,7 +3,7 @@
 seed: 42
 
 data:
-  raw_criminal: "crawler/output/doj_criminal.jsonl"
+  raw_doj: "crawler/output/doj_raw.jsonl"
   synthesized_dir: "data/synthesized"
   preference_dir: "data/preference"
   blind_dir: "data/blind"
@@ -25,12 +25,14 @@ sft:
   cls_loss_weight: 1.0
   clm_loss_weight: 1.0
   use_roberta_distill: false
-  learning_rate: 2.0e-4
+  learning_rate: 5.0e-5
   num_epochs: 3
   per_device_batch_size: 4      # RTX 4060: 1; 服务器: 4
   gradient_accumulation_steps: 4 # RTX 4060: 16 (等效 batch=16); 服务器: 4
   warmup_ratio: 0.03
   max_seq_len: 1024               # RTX 4060: 512; 服务器: 1024
+  early_stopping_patience: 3
+  early_stopping_min_delta: 1.0e-4
   output_dir: "checkpoints/sft"
 
 dpo:
@@ -41,6 +43,8 @@ dpo:
   gradient_accumulation_steps: 8 # RTX 4060: 16; 服务器: 8
   max_prompt_len: 256
   max_length: 1024                # RTX 4060: 512; 服务器: 1024
+  early_stopping_patience: 2
+  early_stopping_min_delta: 1.0e-5
   output_dir: "checkpoints/dpo"
 
 implicit_cot:
@@ -54,6 +58,8 @@ implicit_cot:
   per_device_batch_size: 4       # RTX 4060: 1; 服务器: 4
   gradient_accumulation_steps: 4 # RTX 4060: 16; 服务器: 4
   max_seq_len: 1024               # RTX 4060: 512; 服务器: 1024
+  early_stopping_patience: 3
+  early_stopping_min_delta: 1.0e-4
   output_dir: "checkpoints/implicit_cot"
 
 eval:

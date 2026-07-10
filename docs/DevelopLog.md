@@ -241,3 +241,103 @@
 - WildChat 草垛下载：`python -m scripts.prepare_haystack --n 5000`（需 HF token + 数据集权限；脚本就绪，用户机器跑不动训练暂缓）。
 - 论文图表：跑完 eval 后直接从 `outputs/eval/` 取混淆矩阵 PNG / metrics_table.csv / tpr_fpr_bars.png / latency_table.md 入稿。
 - 可选：Stepwise Internalization 阶段对 GPU 显存敏感，RTX 4060 8GB 可能溢出，建议租 RTX 4090 24GB 或 A6000 48GB。
+
+## 2026-07-10 13:43 CST — SFT/DPO/ImplicitCoT 训练流程添加早停 + SFT 学习率调整
+
+### 本次代码更改做了什么
+1. **为三个训练阶段统一添加早停（Early Stopping）**：
+   - `src/training/sft.py`：每个 epoch 结束后在 test split 上计算验证 loss（`cls_loss + clm_loss`），连续 `early_stopping_patience=3` 个 epoch 无改善则终止；最优模型保存到 `checkpoints/sft/best/`。
+   - `src/training/dpo.py`：将 preference 数据 90/10 切分为 train/eval，使用 `transformers.EarlyStoppingCallback`，基于 `eval_reward_accuracies` 早停，`load_best_model_at_end=True`。
+   - `src/training/implicit_cot.py`：每个 epoch 结束后用当前 removal level `s` 在验证集上计算 loss，连续 `early_stopping_patience=3` 个 epoch 无改善则终止；最优模型保存到 `checkpoints/implicit_cot/best/`。
+
+2. **集中式配置扩展**：
+   - `src/utils/config.py`：在 `SFTConfig` / `DPOConfig` / `ImplicitCoTConfig` 中新增 `early_stopping_patience` 与 `early_stopping_min_delta`。
+   - `configs/default.yaml`：同步添加早停参数。
+
+3. **SFT 学习率调整**：
+   - 将 SFT `learning_rate` 从 `2e-4` 降至 `5e-5`，缓解数据量较小时分类头过快过拟合。
+
+### 开发中遇到的问题与解决方案
+- **问题：SFT 分类头在 160 步内 cls_loss 接近 0，明显过拟合。**
+  - 解决：引入验证集早停 + 降低学习率，避免模型记住训练集；验证集使用 test split（与训练集无重叠）。
+- **问题：DPOTrainer 的早停需要 eval_dataset 与对应 callback。**
+  - 解决：从 `dpo_pairs.jsonl` 中随机切分 10% 作为 eval，配置 `eval_strategy="epoch"`、`metric_for_best_model="eval_reward_accuracies"` 与 `EarlyStoppingCallback`。
+- **问题：Implicit CoT 的验证 loss 依赖于当前 removal level `s`，不能直接用原始 thought 验证。**
+  - 解决：在验证时应用与训练当前 epoch 相同的 `prev_s` 进行 token removal，再计算 `clm_loss + cls_loss`。
+- **问题：早停配置字段需要在三个 Phase 中统一管理。**
+  - 解决：在 `SFTConfig` / `DPOConfig` / `ImplicitCoTConfig` 中分别加入 `early_stopping_patience` 和 `early_stopping_min_delta`，并在 YAML 中可覆盖。
+
+### 代码实现要点
+- 早停逻辑封装在每个训练脚本内部，不引入额外依赖；`transformers.EarlyStoppingCallback` 用于 DPO（TRL 已依赖 transformers）。
+- SFT/ImplicitCoT 在 epoch 结束时调用独立 `_evaluate*` 函数，切换 `model.eval()` / `model.train()` 避免影响训练状态。
+- 验证 loss 采用与训练相同的联合损失形式，确保早停指标与训练目标一致。
+
+### 测试结果
+- `python -m ast.parse` 对 `sft.py`、`dpo.py`、`implicit_cot.py`、`config.py` 语法检查通过。
+- `load_config('configs/default.yaml')` 正常读取所有新增字段，SFT `learning_rate=5e-5`，各阶段 `early_stopping_patience` 符合预期。
+
+## 2026-07-10 13:43 CST — 数据流水线重构：取消犯罪/非犯罪预过滤，LLM 前置判断犯罪性
+
+### 本次代码更改做了什么
+1. **取消 crawler 阶段的犯罪/非犯罪过滤**：
+   - 删除 `crawler/filter_criminal.py`。
+   - `crawler/config.py` 输出文件从 `doj_press_releases.jsonl` 改为 `doj_raw.jsonl`。
+
+2. **数据配置统一指向全量原始数据**：
+   - `src/utils/config.py`：`DataConfig.raw_criminal` 重命名为 `raw_doj`，默认指向 `crawler/output/doj_raw.jsonl`。
+   - `configs/default.yaml`：同步更新。
+   - `src/data/synthesis.py`：读取路径从 `raw_criminal` 改为 `raw_doj`。
+
+3. **重写 `src/data/synthesis.py` 的 LLM 提示词**：
+   - Teacher LLM 先判断新闻稿是否为刑事案件，再分两支输出：
+     - **刑事分支**：生成 `implicit_threat` + `hard_negative` + CoT，label="Threat"。
+     - **非刑事分支**：生成 Safe 噪声样本，`implicit_threat` 复用为中性安全文本，`hard_negative=""`（不生成硬负样本），label="Safe"，probability≈0，category="NonCriminal"。
+   - 不新增任何数据字段，保持 `train.jsonl` / `test.jsonl` 的 schema 兼容。
+
+4. **更新 `docs/Methodology.md` §3**：
+   - 数据源改为 `doj_raw.jsonl`。
+   - 数据合成流程明确 LLM 前置犯罪性判断与 Safe 噪声分支。
+
+### 开发中遇到的问题与解决方案
+- **问题：去掉过滤后，非犯罪新闻稿会进入 synthesis，必须避免污染 hard_negative。**
+  - 解决：在 prompt 中明确要求非刑事案件 `hard_negative` 为空字符串；`hard_negatives.py` 的 `from_synth_internal` 本来就跳过空 text，因此非犯罪记录不会进入 hard_negatives.jsonl。
+- **问题：不能新增字段，但需要为非犯罪样本提供输入文本。**
+  - 解决：复用现有 `implicit_threat` 字段存储中性安全摘要；`_from_synth` 的 `text=d.get("implicit_threat") or d.get("text", "")` 天然兼容。
+- **问题：`probability` 字段在非刑事案件应如何设置。**
+  - 解决：prompt 要求 probability=0.0 或极低（0.0-0.05），与 Methodology 中"probability 不进入训练损失"保持一致，仅作为弱参考。
+
+### 代码实现要点
+- 数据 schema 不变，SFT / DPO / ImplicitCoT 训练代码无需任何调整。
+- hard_negative 生成逻辑不变，仍只从刑事案件产生。
+- 配置字段 `raw_doj` 命名更准确，避免后续维护歧义。
+
+### 测试结果
+- `python -m ast.parse` 对 `synthesis.py`、`config.py`、`crawler/run.py`、`crawler/config.py` 语法检查通过。
+- `load_config('configs/default.yaml')` 正确解析 `raw_doj` 为 `crawler/output/doj_raw.jsonl`。
+- 模拟 Safe 分支 JSON 经过 `_parse_synthesis` 解析成功，`hard_negative=""` 被保留但会被下游过滤。
+
+---
+
+## 2026-07-10 16:48 CST — Synthesis 添加 start 参数支持断点续跑
+
+### 本次代码更改做了什么
+
+1. **`src/data/synthesis.py`：`run_synthesis` 新增 `start` 参数**
+   - `start=0` 为默认行为（从头开始），`start=500` 则跳过前 500 条记录。
+   - 参数位于 `limit` 之后，在 `load_doj_records` 后根据 `start` 切片 `records[start:]`。
+   - 日志输出跳过条数和剩余待合成数。
+
+2. **`scripts/run_synthesis.py`：CLI 暴露出 `--start` 参数**
+   - 新增 `--start N`：从第 N+1 条开始处理（跳过前 N 条），用于断点续跑。
+   - 用法示例：`--start 500 --append` 配合使用。
+
+### 关于 train/test 8:2 划分的一致性
+
+`_save_single` 使用 `hashlib.md5(f"{url}:{seed}".encode())` 对每条记录**独立确定性**分配 train/test：
+- 每条记录独立计算 hash，~80% 概率进 train，~20% 进 test。
+- 无论分几次跑、从哪条开始，每条记录的分配结果始终一致（相同 url + seed）。
+- 最终所有记录的总体比例 ≈ 8:2（大数定律保证）。
+
+因此**不需要担心断点续跑破坏划分比例**。`_flush` 函数（`partial` 参数）的随机 shuffling 方式已废弃，当前代码中未被调用。
+
+
