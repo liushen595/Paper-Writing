@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from tqdm import tqdm
+
 from ..utils.logging import get_logger
 from .metrics import label_to_int, threshold_predictions
 
@@ -107,7 +109,8 @@ class QwenZeroShotBaseline(Baseline):
         import time, torch
         from ..data.llm_client import safe_json_extract
         results: list[Prediction] = [None] * len(texts)  # type: ignore
-        for start in range(0, len(texts), batch_size):
+        num_batches = (len(texts) + batch_size - 1) // batch_size
+        for start in tqdm(range(0, len(texts), batch_size), total=num_batches, desc=f"{self.name} batch", unit="batch"):
             batch_texts = texts[start:start + batch_size]
             prompts = []
             for text in batch_texts:

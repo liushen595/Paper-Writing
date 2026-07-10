@@ -37,6 +37,7 @@ def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float
     # 批量推理（QwenZeroShotBaseline 等支持 predict_batch，大幅加速）
     has_batch = type(baseline).predict_batch is not Baseline.predict_batch
     if has_batch and len(texts) > 1:
+        log.info(f"[{baseline.name}] 批量推理 {len(texts)} 条样本...")
         batch_preds = baseline.predict_batch(texts)
         for r, pred in zip(rows, batch_preds):
             gt_label = r.get("label", "Safe")
@@ -81,7 +82,7 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, 
     out_dir.mkdir(parents=True, exist_ok=True)
     pre_generated = pre_generated or {}
     reports: list[dict] = []
-    for name in names:
+    for name in tqdm(names, desc="Baselines", unit="baseline"):
         if name in pre_generated:
             # 使用预生成预测，跳过 GPU 推理
             pred_path = pre_generated[name]

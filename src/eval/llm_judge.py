@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from tqdm import tqdm
+
 from ..data.llm_client import ChatMessage, BaseClient, build_client, safe_json_extract
 from ..utils.logging import get_logger
 
@@ -162,7 +164,7 @@ def run_judge_eval(
     if max_workers <= 1:
         per_sample: list[dict] = []
         correct = 0
-        for r in rows:
+        for r in tqdm(rows, desc="Judge eval", unit="sample"):
             res = judge_quality(
                 client, r.get("text", ""), r.get("model_cot", ""), r.get("model_label", "Safe"),
                 r.get("ref_label", "Safe"), r.get("ref_cot", ""),
