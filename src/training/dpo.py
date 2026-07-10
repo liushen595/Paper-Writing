@@ -51,7 +51,7 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
     from trl import DPOConfig as TRLDPOConfig, DPOTrainer
 
     bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
-    tokenizer = AutoTokenizer.from_pretrained(cfg.sft.base_model)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.sft.base_model, padding_side="left")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -123,4 +123,13 @@ def train_dpo(cfg: ExperimentConfig, dpo_cfg: Optional[DPOConfig] = None) -> Pat
         log.warning(f"SFT 分类头不存在: {sft_cls_head}; dpo-only baseline 将使用随机初始化的分类头")
 
     log.info(f"DPO 训练完成, 模型保存到 {out_dir}")
+    log.info(f"{'='*60}")
+    log.info(f"[下一步] 组装盲测集 + 评估:")
+    log.info(f"  python -m scripts.run_all --only blind")
+    log.info(f"  python -m scripts.run_all --only eval")
+    log.info(f"  评估输出: outputs/eval/predictions_*.json")
+    log.info(f"  # 评估后把 predictions 拷贝到本地做 judge_eval:")
+    log.info(f"  scp server:outputs/eval/predictions_*.json ./outputs/eval/")
+    log.info(f"  python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_sft-no-dpo.json --max-workers 10")
+    log.info(f"{'='*60}")
     return out_dir

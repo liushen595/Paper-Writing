@@ -70,22 +70,66 @@ cp .env.example .env
 
 ## 架构：GPU 阶段（服务器 3090） + API 阶段（本地多线程）
 
-流水线拆分为两类，GPU 和 API 解耦并行：
+流水线拆分为两类，GPU 和 API 解耦并行。
 
-### GPU 阶段（服务器 3090，用 run_all 驱动）
+### 文件路径一览（关键！按流水线顺序）
+
 ```
-haystack → sft → gen_candidates → dpo → blind → eval
+                         ┌─────── 服务器 3090 ───────┐    ┌─── 拷贝到本地 ───┐    ┌─── 本地 API ───┐    ┌── 拷回服务器 ──┐
+SFT 训练                  checkpoints/sft/best/        │                       │                   │                  │
+                         │ adapter_model.safetensors   │                       │                   │                  │
+                         │ classifier_head.pt          │                       │                   │                  │
+gen_candidates ← SFT 读  data/preference/candidates.jsonl ──scp──▶ 本地同路径   │                   │                  │
+                         │                            │                       │                   │                  │
+judge (API)              │                            │                       │ 本地读取 candidates │ dpo_pairs.jsonl  │
+                         │                            │                       │                    │ ──scp──▶ 服务器   │
+DPO 训练 ← SFT + pairs   checkpoints/dpo/             │                       │                   │                  │
+                         │ adapter_model.safetensors   │                       │                   │                  │
+blind                    data/blind/test_blind.csv     │                       │                   │                  │
+eval                     outputs/eval/                 │                       │                   │                  │
+                         │ predictions_*.json          │                       │                   │                  │
+                         │ metrics_table.md            │                       │                   │                  │
+                         │ *.png                       │                       │                   │                  │
+                         │                            │                       │                   │                  │
+judge_eval (API)         │                            │ predictions_*.json    │ judge_eval_*.json │                  │
+                         │                            │ ──scp──▶ 本地          │                   │ (最终产物，论文用) │
 ```
 
-### API 阶段（本地/任意机器，多线程，无需 GPU）
-```
-judge      — 读取 candidates.jsonl，多线程 judge API → dpo_pairs.jsonl
-judge_eval — 读取 predictions JSON，多线程 quality judge → judge_eval_*.json
+### 阶段说明
+
+| # | 阶段 | 位置 | 输入 | 输出 |
+|---|---|---|---|---|
+| 1 | haystack | **服务器** | 网络下载 | `data/haystack/wildchat_nontoxic.jsonl` |
+| 2 | sft | **服务器** | `data/synthesized/train.jsonl` | `checkpoints/sft/` |
+| 3 | gen_candidates | **服务器** | `checkpoints/sft/best/` | `data/preference/candidates.jsonl` |
+| 4 | **拷贝** | — | — | `scp server:.../candidates.jsonl ./data/preference/` |
+| 5 | judge | **本地** | `data/preference/candidates.jsonl` | `data/preference/dpo_pairs.jsonl` |
+| 6 | **拷贝** | — | — | `scp ./data/preference/dpo_pairs.jsonl server:.../` |
+| 7 | dpo | **服务器** | `checkpoints/sft/` + `dpo_pairs.jsonl` | `checkpoints/dpo/` |
+| 8 | blind | **服务器** | `hard_negatives.jsonl` + haystack | `data/blind/test_blind.csv` |
+| 9 | eval | **服务器** | `test_blind.csv` + 各 checkpoint | `outputs/eval/predictions_*.json` 等 |
+| 10 | **拷贝** | — | — | `scp server:.../predictions_*.json ./outputs/eval/` |
+| 11 | judge_eval | **本地** | `outputs/eval/predictions_*.json` | `outputs/eval/judge_eval_*.json` |
+
+### 精确拷贝命令（按需替换路径）
+
+```bash
+# === 服务器 3090 跑完 gen_candidates 后 ===
+# 从服务器拷贝到本地：
+scp user@server:/home/user/Paper-Writing/data/preference/candidates.jsonl ./data/preference/
+
+# === 本地跑完 judge 后 ===
+# 从本地拷贝回服务器：
+scp ./data/preference/dpo_pairs.jsonl user@server:/home/user/Paper-Writing/data/preference/
+
+# === 服务器跑完 eval 后 ===
+# 从服务器拷贝 predictions 到本地（做 judge_eval）：
+scp user@server:/home/user/Paper-Writing/outputs/eval/predictions_*.json ./outputs/eval/
 ```
 
 > **qwen-zeroshot 不在 API 阶段**——它必须用 Qwen3-8B 模型做 GPU 推理。用 qwen-plus API 替代是学术造假（不同模型/规模）。qwen-zeroshot 由 eval 阶段在 GPU 上批量完成（predict_batch 8x）。
 
-### 完整执行顺序
+### 完整执行命令
 
 ```bash
 # ========== 服务器 3090（GPU 阶段）==========
@@ -93,43 +137,40 @@ judge_eval — 读取 predictions JSON，多线程 quality judge → judge_eval_
 # 1. 草垛下载（一次性）
 python -m scripts.run_all --only haystack
 
-# 2. SFT 训练
+# 2. SFT 训练 → checkpoints/sft/
 python -m scripts.run_all --only sft
 
-# 3. DPO 候选生成（GPU，用 SFT 模型，不调 API）
+# 3. DPO 候选生成（GPU 推理） → data/preference/candidates.jsonl
 python -m scripts.run_all --only gen_candidates --limit 3000
-# 输出: data/preference/candidates.jsonl
 
-# --- 把 candidates.jsonl 拷到本地 ---
+# ═══════ 拷贝 candidates.jsonl 到本地 ═══════
+# scp server:.../data/preference/candidates.jsonl ./data/preference/
 
 # ========== 本地（API 阶段，多线程）==========
 
-# 4. DPO 偏好对生成（多线程 judge API，~10min）
+# 4. 多线程 judge → data/preference/dpo_pairs.jsonl
 python -m scripts.pre_generate judge --input data/preference/candidates.jsonl --max-workers 10
-# 输出: data/preference/dpo_pairs.jsonl
 
-# --- 把 dpo_pairs.jsonl 拷回服务器 ---
+# ═══════ 拷贝 dpo_pairs.jsonl 回服务器 ═══════
+# scp ./data/preference/dpo_pairs.jsonl server:.../data/preference/
 
 # ========== 服务器 3090（GPU 阶段）==========
 
-# 5. DPO 训练
+# 5. DPO 训练 → checkpoints/dpo/
 python -m scripts.run_all --only dpo
 
-# 6. 盲测集组装
+# 6. 盲测集 → data/blind/test_blind.csv
 python -m scripts.run_all --only blind
 
-# 7. 评估（GPU baseline: toxic-bert + sft-no-dpo + dpo-only）
+# 7. 评估 → outputs/eval/predictions_*.json, metrics_table.md
 python -m scripts.run_all --only eval
 
-# --- 把 outputs/eval/predictions_*.json 拷到本地 ---
+# ═══════ 拷贝 predictions 到本地 ═══════
+# scp server:.../outputs/eval/predictions_*.json ./outputs/eval/
 
 # ========== 本地（API 阶段，多线程）==========
 
-# 8. qwen-zeroshot 已在步骤 7 的 eval 中自动完成（GPU 批量生成，predict_batch 8x 加速）
-# eval 会跑全部 4 个 baseline: toxic-bert + qwen-zeroshot + sft-no-dpo + dpo-only
-# qwen-zeroshot 使用 Qwen3-8B 模型 GPU 推理（不许用 API 替代，学术造假）
-
-# 9. Judge 质量评估（多线程 API，~10min/baseline）
+# 8. Judge 质量评估 → outputs/eval/judge_eval_predictions_*.json
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_sft-no-dpo.json --max-workers 10
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_dpo-only.json --max-workers 10
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_qwen-zeroshot.json --max-workers 10

@@ -69,7 +69,7 @@ class QwenZeroShotBaseline(Baseline):
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         import torch
         bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
-        self.tok = AutoTokenizer.from_pretrained(model_name)
+        self.tok = AutoTokenizer.from_pretrained(model_name, padding_side="left")
         self.model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb, device_map="auto")
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.prompt_tpl = (

@@ -158,4 +158,9 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
 
     model.save(out_dir)
     log.info(f"SFT 训练完成, 最终模型保存到 {out_dir}")
+    log.info(f"{'='*60}")
+    log.info(f"[下一步] 用 SFT 模型生成 DPO 候选（GPU 推理，不调 API）:")
+    log.info(f"  python -m scripts.run_all --only gen_candidates --limit 3000")
+    log.info(f"  输出: data/preference/candidates.jsonl")
+    log.info(f"{'='*60}")
     return out_dir

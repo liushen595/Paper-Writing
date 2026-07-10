@@ -161,7 +161,7 @@ def _causal_lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
 
 def load_tokenizer(base_model: str):
     from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(base_model)
+    tok = AutoTokenizer.from_pretrained(base_model, padding_side="left")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     return tok

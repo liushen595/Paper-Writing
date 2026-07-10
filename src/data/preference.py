@@ -191,8 +191,6 @@ def _batch_generate(
     import torch
 
     device = next(generate_model.parameters()).device
-    original_side = tokenizer.padding_side
-    tokenizer.padding_side = "left"
 
     results: list[str] = []
     total = len(prompt_texts)
@@ -223,7 +221,6 @@ def _batch_generate(
         pbar.update(1)
     pbar.close()
 
-    tokenizer.padding_side = original_side
     return results
 
 
@@ -422,6 +419,14 @@ def generate_candidates_only(
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     log.info(f"候选生成完成: {start_idx + len(samples)} 条 -> {out_path}")
+    log.info(f"{'='*60}")
+    log.info(f"[下一步] 把 {out_path} 拷贝到本地，然后运行:")
+    log.info(f"  scp server:{out_path} ./data/preference/")
+    log.info(f"  python -m scripts.pre_generate judge --input data/preference/candidates.jsonl --max-workers 10")
+    log.info(f"  # judge 输出: data/preference/dpo_pairs.jsonl")
+    log.info(f"  scp ./data/preference/dpo_pairs.jsonl server:{PROJECT_ROOT / data_cfg.preference_dir / 'dpo_pairs.jsonl'}")
+    log.info(f"  # 拷贝回服务器后运行: python -m scripts.run_all --only dpo")
+    log.info(f"{'='*60}")
     return out_path
 
 
@@ -495,6 +500,11 @@ def judge_candidates_only(
 
     save_preference_pairs(pairs, out_path)
     log.info(f"偏好对生成完成: {len(pairs)} 条 -> {out_path}")
+    log.info(f"{'='*60}")
+    log.info(f"[下一步] 把 {out_path} 拷贝回服务器，然后运行:")
+    log.info(f"  scp {out_path} server:{PROJECT_ROOT / data_cfg.preference_dir / 'dpo_pairs.jsonl'}")
+    log.info(f"  python -m scripts.run_all --only dpo")
+    log.info(f"{'='*60}")
     return out_path
 
 
