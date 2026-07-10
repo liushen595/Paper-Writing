@@ -376,4 +376,40 @@
 - 语法检查通过（`ast.parse`）。
 - `pytest tests/test_logic.py -q`：13 passed，原有单测未受影响。
 
+---
+
+## 2026-07-10 20:06 CST — 数据去重与清理脚本
+
+### 问题
+
+全量合成完成后，train + test 共 10,157 条记录，但 DOJ 原始只有 9,582 条，多出 616 条重复（断点续跑时 `--start` 偏移未能精确对齐导致部分记录被处理两次）。hard_negatives.jsonl（从 train/test 逐行提取）也因此有 379 条重复。
+
+### 硬负样本提取逻辑确认
+
+`hard_negatives.py:from_synth_internal()` 确实同时遍历 train.jsonl 和 test.jsonl 的每一行，提取 `hard_negative` 字段（空则跳过）。因此 train/test 有重复 → hard_negatives 必有重复。去重 train/test 后需重建 hard_negatives。
+
+### 新增 `scripts/check_dedup.py`
+
+功能：
+- **查验模式**（默认）：统计 train/test/hard_negatives 的重复情况，检查 train↔test 有无 url 交集
+- **清理模式**（`--clean`）：按 source_url 去重（保留首次出现），覆写文件，并自动从去重后 train/test 重建 hard_negatives.jsonl
+- `--dry-run`：预览不写入
+- `--yes`：跳过交互确认提示
+
+### 去重结果
+
+| 文件 | 去重前 | 去重后 | 移除 |
+|------|--------|--------|------|
+| train.jsonl | 8,100 | 7,606 | -494 |
+| test.jsonl | 2,057 | 1,935 | -122 |
+| hard_negatives.jsonl | 5,010 | 4,622 | -388 |
+
+- train:test = 7,606:1,935 ≈ 79.7:20.3（符合 8:2）
+- train 与 test 的 source_url 无交集（hash 划分完全正确）
+- 唯一 url 总数 9,541，与 DOJ 原始 9,582 差 41 条（LLM 调用失败）
+
+### 测试结果
+- 语法检查通过
+- 13 个已有单测未受影响
+
 
