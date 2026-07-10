@@ -107,7 +107,7 @@ def rule_filter(prompt: str, rule_keywords: list[str]) -> bool:
 
 def build_preference_pairs(
     samples: list[dict],
-    candidate_generator,  # callable(prompt, n) -> list[str]
+    candidate_generator,  # callable(prompts: list[str], n: int) -> list[list[str]]
     judge_client: BaseClient,
     data_cfg: DataConfig,
     dpo_cfg: DPOConfig,
@@ -117,14 +117,25 @@ def build_preference_pairs(
 ) -> list[PreferencePair]:
     set_seed(data_cfg.seed)
     rule_keywords = rule_keywords or []
-    pairs: list[PreferencePair] = []
-    for i, s in enumerate(tqdm(samples, desc="Preference pairs", unit="sample")):
+
+    # 预过滤 rule-based 样本，收集所有有效 prompt
+    valid_prompts: list[str] = []
+    valid_refs: list[tuple[str, str]] = []  # (ref_label, ref_cot)
+    for s in samples:
         prompt = s.get("implicit_threat") or s.get("text", "")
-        ref_label = s.get("label", "Threat")
-        ref_cot = s.get("thought_process", "")
         if rule_filter(prompt, rule_keywords):
             continue
-        cands = candidate_generator(prompt, n=2)
+        valid_prompts.append(prompt)
+        valid_refs.append((s.get("label", "Threat"), s.get("thought_process", "")))
+
+    # 批量生成所有候选（一次 GPU 调用处理多个 prompt）
+    log.info(f"批量生成 {len(valid_prompts)} 个 prompt 的候选回复...")
+    all_cands = candidate_generator(valid_prompts, n=2)
+
+    # 逐个 judge
+    pairs: list[PreferencePair] = []
+    zipped = list(zip(valid_prompts, all_cands, valid_refs))
+    for prompt, cands, (ref_label, ref_cot) in tqdm(zipped, desc="Preference pairs", unit="sample"):
         if len(cands) < 2:
             continue
         a, b = cands[0], cands[1]
@@ -137,7 +148,7 @@ def build_preference_pairs(
             continue
         chosen, rejected = res
         pairs.append(PreferencePair(prompt=prompt, chosen=chosen, rejected=rejected))
-    log.info(f"偏好对生成完成: 共处理 {len(samples)} 条，采纳 {len(pairs)} 条")
+    log.info(f"偏好对生成完成: 共处理 {len(valid_prompts)} 条，采纳 {len(pairs)} 条")
     return pairs
 
 
@@ -161,11 +172,61 @@ def load_preference_pairs(path: str | Path) -> list[dict]:
     return out
 
 
-def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tuple[float, ...] = (0.3, 1.0)) -> "callable":
-    """构造基于 SFT checkpoint 的候选生成器。
+def _batch_generate(
+    generate_model,
+    tokenizer,
+    prompt_texts: list[str],
+    temperature: float,
+    max_new_tokens: int = 128,
+    max_seq_len: int = 1024,
+    top_p: float = 0.95,
+    batch_size: int = 16,
+) -> list[str]:
+    """批量 GPU 推理：一次 generate() 处理多个 prompt，显著提升 GPU 利用率。
 
-    对同一 prompt 用不同温度采样 n 个候选：低温=保守（倾向 chosen），高温=多样（更可能产生被 reject 的草率回答）。
-    生成内容为 SFT 学到的 "<thought_process> -> <label>" 形式，便于 DPO judge 比较推理严谨度。
+    prompt_texts 必须是已经 apply_chat_template 的纯文本字符串。
+    生成时使用左填充（left-padding），解码时按 attention_mask 切片取生成部分。
+    """
+    import torch
+
+    device = next(generate_model.parameters()).device
+    original_side = tokenizer.padding_side
+    tokenizer.padding_side = "left"
+
+    results: list[str] = []
+    total = len(prompt_texts)
+    for start in range(0, total, batch_size):
+        batch_texts = prompt_texts[start:start + batch_size]
+        inputs = tokenizer(
+            batch_texts, return_tensors="pt", padding=True,
+            truncation=True, max_length=max_seq_len,
+        ).to(device)
+        input_lens = inputs["attention_mask"].sum(dim=1)  # (B,) 每个样本的实际 token 数
+
+        with torch.no_grad():
+            outputs = generate_model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                max_new_tokens=max_new_tokens,
+                do_sample=True, temperature=temperature, top_p=top_p,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        for j in range(len(batch_texts)):
+            gen = tokenizer.decode(
+                outputs[j][input_lens[j]:], skip_special_tokens=True,
+            )
+            results.append(gen)
+
+    tokenizer.padding_side = original_side
+    return results
+
+
+def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tuple[float, ...] = (0.3, 1.0)) -> "callable":
+    """构造基于 SFT checkpoint 的批量候选生成器。
+
+    对全部 prompt 先预计算 chat_template 文本，再按不同温度整批调用 _batch_generate，
+    避免逐样本串行 GPU 推理。返回的 callable 签名为 (prompts: list[str], n: int) -> list[list[str]]。
     """
     import torch
     from ..models.student import StudentModel, load_tokenizer
@@ -175,34 +236,41 @@ def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tu
     tokenizer = load_tokenizer(sft_cfg.base_model)
     model = StudentModel.load(sft_cfg, ckpt_dir)
     model.eval()
-    device = next(model.parameters()).device
     system = SYSTEM_PROMPT_SFT
     instr_tpl = INSTRUCTION_TEMPLATE
 
-    def _gen(prompt: str, n: int = 2) -> list[str]:
+    def _gen_batch(prompts: list[str], n: int = 2) -> list[list[str]]:
+        # 预计算所有 prompt 的 chat_template 文本
+        prompt_texts: list[str] = []
+        for p in prompts:
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": instr_tpl.format(text=p)},
+            ]
+            prompt_texts.append(
+                tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+            )
+
+        # 扩展温度列表到 n 个
         temps = list(temperatures)
         while len(temps) < n:
             temps.append(temps[-1] + 0.2)
-        cands: list[str] = []
-        for i in range(n):
-            t = temps[i % len(temps)]
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": instr_tpl.format(text=prompt)},
-            ]
-            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
-            inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=sft_cfg.max_seq_len).to(device)
-            with torch.no_grad():
-                out = model.base.generate(
-                    input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"],
-                    max_new_tokens=128, do_sample=True, temperature=t, top_p=0.95,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
-            gen = tokenizer.decode(out[0][inputs["input_ids"].size(1):], skip_special_tokens=True)
-            cands.append(gen)
-        return cands
 
-    return _gen
+        # 每个温度整批生成一轮
+        all_gen: list[list[str]] = [[] for _ in prompts]
+        for t in temps[:n]:
+            gen_texts = _batch_generate(
+                model.base, tokenizer, prompt_texts, temperature=t,
+                max_new_tokens=128, max_seq_len=sft_cfg.max_seq_len,
+            )
+            for i, g in enumerate(gen_texts):
+                all_gen[i].append(g)
+        return all_gen
+
+    return _gen_batch
 
 
 def run_preference_generation(
@@ -240,10 +308,13 @@ def run_preference_generation(
     save_preference_pairs(pairs, out_path)
 
 
-def _dummy_candidate_gen(prompt: str, n: int = 2) -> list[str]:
-    """占位候选生成器；正式运行时由 make_sft_candidate_generator 提供 SFT 模型采样。"""
+def _dummy_candidate_gen(prompts: list[str], n: int = 2) -> list[list[str]]:
+    """占位批量候选生成器；正式运行时由 make_sft_candidate_generator 提供 SFT 模型采样。"""
     log.warning("使用占位候选生成器，正式训练请传入 SFT checkpoint")
-    return [f"[Reasoning] {prompt[:50]}... -> Threat.", f"[Reasoning] {prompt[:50]}... -> Safe."][:n]
+    return [
+        [f"[Reasoning] {p[:50]}... -> Threat.", f"[Reasoning] {p[:50]}... -> Safe."][:n]
+        for p in prompts
+    ]
 
 
 def generate_candidates_only(
@@ -252,14 +323,16 @@ def generate_candidates_only(
     sft_ckpt: str | Path,
     limit: Optional[int] = None,
     out_path: Optional[str | Path] = None,
+    batch_size: int = 16,
 ) -> Path:
-    """Phase A（GPU）：用 SFT 模型批量生成候选回复，保存到 candidates.jsonl。
+    """Phase A（GPU）：用 SFT 模型**批量**生成候选回复，保存到 candidates.jsonl。
 
-    不调用任何 API，纯 GPU 推理。输出每行：
+    不调用任何 API，纯 GPU 批量推理。输出每行：
     {"prompt": ..., "candidate_a": ..., "candidate_b": ...,
      "ref_label": ..., "ref_cot": ...}
+
+    batch_size 控制每轮 GPU 推理的样本数（RTX 3090 24GB 推荐 16）。
     """
-    import torch
     from .synthesis import load_synthesized
     from ..models.student import StudentModel, load_tokenizer
     from ..data.dataset import SYSTEM_PROMPT_SFT, INSTRUCTION_TEMPLATE
@@ -277,43 +350,71 @@ def generate_candidates_only(
         out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 断点续跑：跳过已有行数
+    start_idx = 0
+    if out_path.exists():
+        with open(out_path, "r", encoding="utf-8") as f:
+            start_idx = sum(1 for _ in f)
+        if start_idx >= len(samples):
+            log.info(f"全部 {len(samples)} 条已生成完毕，跳过")
+            return out_path
+        samples = samples[start_idx:]
+        log.info(f"断点续跑: 跳过前 {start_idx} 条，剩余 {len(samples)} 条")
+
     log.info(f"加载 SFT 模型: {sft_ckpt}")
     tokenizer = load_tokenizer(sft_cfg.base_model)
     model = StudentModel.load(sft_cfg, sft_ckpt)
     model.eval()
-    device = next(model.parameters()).device
 
     temperatures = (0.3, 1.0)
     system = SYSTEM_PROMPT_SFT
     instr_tpl = INSTRUCTION_TEMPLATE
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        for i, s in enumerate(tqdm(samples, desc="Gen candidates", unit="sample")):
-            prompt = s.get("implicit_threat") or s.get("text", "")
-            ref_label = s.get("label", "Threat")
-            ref_cot = s.get("thought_process", "")
-            cands: list[str] = []
-            for t in temperatures:
-                messages = [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": instr_tpl.format(text=prompt)},
-                ]
-                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
-                inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=sft_cfg.max_seq_len).to(device)
-                with torch.no_grad():
-                    out = model.base.generate(
-                        input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"],
-                        max_new_tokens=128, do_sample=True, temperature=t, top_p=0.95,
-                        pad_token_id=tokenizer.pad_token_id,
-                    )
-                gen = tokenizer.decode(out[0][inputs["input_ids"].size(1):], skip_special_tokens=True)
-                cands.append(gen)
+    # 预计算所有 prompt 文本
+    prompts: list[str] = []
+    ref_labels: list[str] = []
+    ref_cots: list[str] = []
+    prompt_texts: list[str] = []
+    for s in samples:
+        p = s.get("implicit_threat") or s.get("text", "")
+        prompts.append(p)
+        ref_labels.append(s.get("label", "Threat"))
+        ref_cots.append(s.get("thought_process", ""))
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": instr_tpl.format(text=p)},
+        ]
+        prompt_texts.append(
+            tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        )
+    log.info(f"预计算 {len(prompt_texts)} 条 prompt 文本完成，开始批量生成 (batch_size={batch_size})")
+
+    # 两轮批量生成：先低温后高温
+    cands_low = _batch_generate(
+        model.base, tokenizer, prompt_texts, temperature=temperatures[0],
+        max_new_tokens=128, max_seq_len=sft_cfg.max_seq_len, batch_size=batch_size,
+    )
+    cands_high = _batch_generate(
+        model.base, tokenizer, prompt_texts, temperature=temperatures[1],
+        max_new_tokens=128, max_seq_len=sft_cfg.max_seq_len, batch_size=batch_size,
+    )
+
+    # 追加写入 JSONL
+    with open(out_path, "a", encoding="utf-8") as f:
+        for i in range(len(samples)):
             record = {
-                "prompt": prompt, "candidate_a": cands[0], "candidate_b": cands[1],
-                "ref_label": ref_label, "ref_cot": ref_cot,
+                "prompt": prompts[i],
+                "candidate_a": cands_low[i],
+                "candidate_b": cands_high[i],
+                "ref_label": ref_labels[i],
+                "ref_cot": ref_cots[i],
             }
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    log.info(f"候选生成完成: {i + 1} 条 -> {out_path}")
+
+    log.info(f"候选生成完成: {start_idx + len(samples)} 条 -> {out_path}")
     return out_path
 
 

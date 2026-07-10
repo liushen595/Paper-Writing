@@ -1,5 +1,37 @@
 # 开发日志 (Develop Log)
 
+## 2026-07-11 03:13 — gen_candidates 批量 GPU 推理加速
+
+### 本次代码更改做了什么
+1. **新增 `_batch_generate` 通用批量生成函数**（`src/data/preference.py`）：
+   - 左填充（left-padding）批量 tokenize，一次 `model.generate()` 处理 batch_size=16 个 prompt
+   - 按 `attention_mask.sum(dim=1)` 精确切片每个样本的生成部分
+   - 保存/恢复 `tokenizer.padding_side` 避免副作用
+2. **重写 `generate_candidates_only`**：
+   - 预计算所有 chat_template 文本（避免循环内重复处理）
+   - 双轮批量生成（先低温 0.3 后高温 1.0），替换逐样本串行循环
+   - 新增断点续跑（检查输出文件已有行数，跳过已完成样本）
+   - 新增 `batch_size` 参数（默认 16）
+3. **重写 `make_sft_candidate_generator`**：闭包签名改为 `_gen_batch(prompts, n) -> list[list[str]]`，内部整批调用 `_batch_generate`
+4. **同步更新调用链**：
+   - `build_preference_pairs`：先收集所有 prompt → 调用批量生成器一次 → 再逐个 judge
+   - `_dummy_candidate_gen`：签名从 `(prompt, n) -> list[str]` 改为 `(prompts, n) -> list[list[str]]`
+
+### 预期效果
+| 指标 | 旧 (batch=1, 串行) | 新 (batch=16, 批量) |
+|---|---|---|
+| 3000 样本 generate 调用次数 | 6000 | ~375 |
+| GPU 利用率 | ~50% (160-200W) | ~90%+ |
+| 200 样本耗时 | ~1h | ~5-8 min |
+| 3000 样本耗时 | ~15h+ | ~1-1.5h |
+| 加速比 | — | **8-12x** |
+
+### 不兼容变更
+- `make_sft_candidate_generator` 返回的闭包签名：`_gen(prompt: str, ...)` → `_gen_batch(prompts: list[str], ...)`
+- `_dummy_candidate_gen` 签名同步变更，无需外部调用方适配（`build_preference_pairs` 已同步更新）
+
+---
+
 ## 2026-07-04 08:06 — 项目初始化与代码骨架搭建
 
 ### 本次代码更改做了什么
