@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from tqdm import tqdm
+
 from ..utils.config import DPOConfig, DataConfig
 from ..utils.env import PROJECT_ROOT
 from ..utils.logging import get_logger
@@ -115,7 +117,7 @@ def build_preference_pairs(
     set_seed(data_cfg.seed)
     rule_keywords = rule_keywords or []
     pairs: list[PreferencePair] = []
-    for i, s in enumerate(samples):
+    for i, s in enumerate(tqdm(samples, desc="Preference pairs", unit="sample")):
         prompt = s.get("implicit_threat") or s.get("text", "")
         ref_label = s.get("label", "Threat")
         ref_cot = s.get("thought_process", "")
@@ -134,8 +136,7 @@ def build_preference_pairs(
             continue
         chosen, rejected = res
         pairs.append(PreferencePair(prompt=prompt, chosen=chosen, rejected=rejected))
-        if (i + 1) % 100 == 0:
-            log.info(f"偏好对生成进度 {i+1}/{len(samples)}, 已采纳 {len(pairs)}")
+    log.info(f"偏好对生成完成: 共处理 {len(samples)} 条，采纳 {len(pairs)} 条")
     return pairs
 
 
@@ -188,7 +189,7 @@ def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tu
                 {"role": "system", "content": system},
                 {"role": "user", "content": instr_tpl.format(text=prompt)},
             ]
-            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
             inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=sft_cfg.max_seq_len).to(device)
             with torch.no_grad():
                 out = model.base.generate(

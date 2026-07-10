@@ -1,6 +1,6 @@
 """Phase 1 SFT 数据整理：把 TrainExample 转成 tokenized 的 input_ids / labels_clm / labels_cls。
 
-Qwen3 ChatML template (apply_chat_template 自动处理, enable_thinking=True 默认):
+Qwen3 ChatML template (apply_chat_template, enable_thinking=False 显式关闭):
   <|system|>SYSTEM_PROMPT_SFT<|end|>
   <|user|>INSTRUCTION<|end|>
   <|assistant|><thought>thought</thought>\n[Category: X]\nLabel<|end|>
@@ -37,12 +37,12 @@ def format_chat(example: TrainExample, tokenizer) -> tuple[str, str]:
         {"role": "user", "content": INSTRUCTION_TEMPLATE.format(text=example.text)},
         {"role": "assistant", "content": example.render_target()},
     ]
-    full = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+    full = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False, enable_thinking=False)
     messages_prompt = [
         {"role": "system", "content": SYSTEM_PROMPT_SFT},
         {"role": "user", "content": INSTRUCTION_TEMPLATE.format(text=example.text)},
     ]
-    prompt = tokenizer.apply_chat_template(messages_prompt, tokenize=False, add_generation_prompt=True)
+    prompt = tokenizer.apply_chat_template(messages_prompt, tokenize=False, add_generation_prompt=True, enable_thinking=False)
     return full, prompt
 
 
