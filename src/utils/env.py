@@ -55,10 +55,10 @@ def load_env_config() -> EnvConfig:
     raw_dir = Path(os.environ.get("RAW_DIR", PROJECT_ROOT / "crawler" / "output")).resolve()
     return EnvConfig(
         glm=LLMProviderConfig(
-            name="glm",
+            name="aliyun",
             api_key=os.environ.get("GLM_API_KEY", "").strip(),
             base_url=os.environ.get("GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/").strip(),
-            model_name=os.environ.get("GLM_MODEL_NAME", "glm-4-flash").strip(),
+            model_name=os.environ.get("GLM_MODEL_NAME", "qwen-plus").strip(),
         ),
         agnes=LLMProviderConfig(
             name="agnes",

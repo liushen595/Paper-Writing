@@ -86,7 +86,7 @@ class EvalConfig:
     baselines: list[str] = field(
         default_factory=lambda: ["toxic-bert", "qwen-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
     )
-    judge_provider: str = "glm"
+    judge_provider: str = "aliyun"
     judge_swap_positions: bool = True
     judge_reference_guided: bool = True
     output_dir: str = "outputs/eval"

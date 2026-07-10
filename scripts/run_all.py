@@ -39,7 +39,7 @@ STAGES: list[str] = ["haystack", "sft", "pref", "dpo", "blind", "eval", "judge"]
 STAGE_COMMANDS: dict[str, list[str]] = {
     "haystack": ["python", "-m", "scripts.prepare_haystack", "--n", "5000"],
     "sft":     ["python", "-m", "scripts.run_sft", "{limit}"],
-    "pref":    ["python", "-m", "scripts.run_preference", "--judge", "glm", "--judge-model", "{judge_model}", "{limit}"],
+    "pref":    ["python", "-m", "scripts.run_preference", "--judge", "aliyun", "--judge-model", "{judge_model}", "{limit}"],
     "dpo":     ["python", "-m", "scripts.run_dpo"],
     "blind":   ["python", "-m", "scripts.run_blind_set"],
     "eval":    ["python", "-m", "scripts.run_eval", "{limit}"],

@@ -206,7 +206,7 @@ def make_sft_candidate_generator(sft_cfg, ckpt_dir: str | Path, temperatures: tu
 def run_preference_generation(
     data_cfg: DataConfig,
     dpo_cfg: DPOConfig,
-    judge_provider: str = "glm",
+    judge_provider: str = "aliyun",
     judge_model: Optional[str] = None,
     candidate_generator=None,
     sft_cfg=None,

@@ -13,7 +13,7 @@ def main():
     ap = argparse.ArgumentParser(description="LLM-as-Judge 质量评估")
     ap.add_argument("--config", default="configs/default.yaml")
     ap.add_argument("--predictions", required=True, help="predictions_<baseline>.json 路径")
-    ap.add_argument("--judge", default="glm")
+    ap.add_argument("--judge", default="aliyun")
     ap.add_argument("--judge-model", default=None)
     ap.add_argument("--limit", type=int, default=None, help="限制评估样本数（smoke test 用）")
     args = ap.parse_args()

@@ -139,7 +139,7 @@ def _verbosity_bias_rate(per_sample: list[dict]) -> float:
 
 def run_judge_eval(
     predictions_path: str | Path,
-    judge_provider: str = "glm",
+    judge_provider: str = "aliyun",
     judge_model: Optional[str] = None,
     out_path: Optional[str | Path] = None,
     limit: Optional[int] = None,
