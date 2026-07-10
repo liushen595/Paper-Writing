@@ -9,7 +9,6 @@
 # API 阶段（本地多线程，无需 GPU）:
 #   python -m scripts.pre_generate judge --input data/preference/candidates.jsonl --max-workers 10
 #   python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_<name>.json --max-workers 10
-# qwen-zeroshot 在 eval 阶段 GPU 上批量完成
 set -e
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"

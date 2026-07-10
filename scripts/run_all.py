@@ -5,7 +5,6 @@
 流水线分为三类阶段：
   - GPU 阶段（服务器 3090）：haystack, sft, gen_candidates, dpo, blind, eval
   - API 阶段（本地多线程，无需 GPU）：judge, judge_eval
-  - qwen-zeroshot 在 eval 阶段 GPU 上批量完成，不在此列
   - 混合阶段：eval（可配合 --pre-generated 跳过部分 GPU baseline）
 
 用法:
@@ -25,7 +24,7 @@
   judge           Phase 2B 多线程 judge API 生成偏好对（本地 API）
   dpo             Phase 2 DPO 训练（依赖 sft checkpoint + 偏好对）
   blind           盲测集组装（本地，<1min）
-  eval            盲测集评估（GPU baseline，含 qwen-zeroshot 批量推理）
+  eval            盲测集评估（GPU baseline）
   judge_eval      LLM-as-judge 质量评估（本地 API 多线程）
 """
 from __future__ import annotations
@@ -40,8 +39,6 @@ from src.utils.env import PROJECT_ROOT
 # GPU 阶段（run_all 驱动 subprocess）
 GPU_STAGES: list[str] = ["haystack", "sft", "gen_candidates", "dpo", "blind", "eval"]
 
-# API 阶段（由 pre_generate.py 处理，不在 run_all 中跑）
-# qwen-zeroshot 不在此列——它必须用 Qwen3-8B GPU 推理，eval 阶段自动完成
 API_STAGES: list[str] = ["judge", "judge_eval"]
 
 # 全部阶段（文档展示用）

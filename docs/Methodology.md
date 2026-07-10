@@ -109,9 +109,8 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 
 ### 6.1 Baselines
 1. **toxic-bert**（判别式）：`unitary/toxic-bert`，统计隐式漏报。
-2. **qwen-zeroshot**（通用生成式）：未微调 Qwen3-8B 零样本（关闭 thinking 模式，直接输出 JSON）。
-3. **sft-no-dpo**（消融）：Phase 1 SFT 模型（未对齐 DPO），验证 DPO 对 FPR 的贡献。
-4. **dpo-only**（消融）：Phase 2 DPO 后 LoRA 权重 + SFT 分类头，验证 DPO 对 TPR/FPR 的边际贡献。
+2. **sft-no-dpo**（消融）：Phase 1 SFT 模型（未对齐 DPO），验证 DPO 对 FPR 的贡献。
+3. **dpo-only**（消融）：Phase 2 DPO 后 LoRA 权重 + SFT 分类头，验证 DPO 对 TPR/FPR 的边际贡献。
 
 > Phase 3 隐式 CoT 内化（implicit-cot baseline）因时间约束未纳入本轮实验，列为 future work。
 > 原 `roberta-large` baseline 已移除：本任务以 LLM 内化为主路线，RoBERTa 蒸馏源保留为 Phase 1 可选增强，不作单独 baseline。

@@ -1,4 +1,4 @@
-"""评估基线：toxic-bert / qwen-zeroshot / sft-no-dpo / dpo-only。
+"""评估基线：toxic-bert / sft-no-dpo / dpo-only。
 
 每个 baseline 暴露 predict(text) -> (label, prob, cot?) 的统一接口。
 支持批量推理（predict_batch）加速评估。
@@ -62,84 +62,6 @@ class ToxicBertBaseline(Baseline):
         return Prediction(label="Threat" if prob > 0.5 else "Safe", prob=prob, latency_ms=ms)
 
 
-class QwenZeroShotBaseline(Baseline):
-    """未微调 Qwen3-8B 零样本提示（关闭 thinking 模式，直接输出 JSON）。"""
-
-    name = "qwen-zeroshot"
-
-    def __init__(self, model_name: str = "Qwen/Qwen3-8B"):
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-        import torch
-        bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
-        self.tok = AutoTokenizer.from_pretrained(model_name, padding_side="left")
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, quantization_config=bnb, device_map="auto")
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.prompt_tpl = (
-            "Read the message and decide if it expresses implicit criminal intent. "
-            'Output JSON {{"label": "Threat"|"Safe", "prob": 0.0-1.0, "reason": "..."}}.\n'
-            "Message: {text}\nJSON:"
-        )
-
-    def predict(self, text: str) -> Prediction:
-        import time, torch
-        from ..data.llm_client import safe_json_extract
-        t0 = time.perf_counter()
-        messages = [{"role": "user", "content": self.prompt_tpl.format(text=text)}]
-        prompt = self.tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
-        inputs = self.tok(prompt, return_tensors="pt").to(self.device)
-        with torch.no_grad():
-            out = self.model.generate(
-                **inputs, max_new_tokens=512, do_sample=True, temperature=0.1,
-                pad_token_id=self.tok.pad_token_id,
-            )
-        gen_tokens = out.size(1) - inputs["input_ids"].size(1)
-        gen = self.tok.decode(out[0][inputs["input_ids"].size(1):], skip_special_tokens=True)
-        ms = (time.perf_counter() - t0) * 1000
-        try:
-            obj = safe_json_extract(gen)
-            label = obj.get("label", "Safe")
-            prob = float(obj.get("prob", 0.0))
-        except Exception:
-            label = "Safe"
-            prob = 0.0
-        return Prediction(label=label, prob=prob, cot=gen, latency_ms=ms, tokens=gen_tokens)
-
-    def predict_batch(self, texts: list[str], batch_size: int = 8) -> list[Prediction]:
-        """批量生成：多条 prompt 一起喂给 GPU，大幅减少推理延迟。"""
-        import time, torch
-        from ..data.llm_client import safe_json_extract
-        results: list[Prediction] = [None] * len(texts)  # type: ignore
-        num_batches = (len(texts) + batch_size - 1) // batch_size
-        for start in tqdm(range(0, len(texts), batch_size), total=num_batches, desc=f"{self.name} batch", unit="batch"):
-            batch_texts = texts[start:start + batch_size]
-            prompts = []
-            for text in batch_texts:
-                messages = [{"role": "user", "content": self.prompt_tpl.format(text=text)}]
-                prompt = self.tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
-                prompts.append(prompt)
-            t0 = time.perf_counter()
-            inputs = self.tok(prompts, return_tensors="pt", padding=True, truncation=True, max_length=1024).to(self.device)
-            with torch.no_grad():
-                out = self.model.generate(
-                    **inputs, max_new_tokens=512, do_sample=True, temperature=0.1,
-                    pad_token_id=self.tok.pad_token_id,
-                )
-            ms = (time.perf_counter() - t0) * 1000 / len(batch_texts)
-            for i in range(len(batch_texts)):
-                n_prompt = inputs["input_ids"].size(1)
-                gen = self.tok.decode(out[i][inputs["input_ids"].size(1):], skip_special_tokens=True)
-                gen_tokens = out.size(1) - inputs["input_ids"].size(1)
-                try:
-                    obj = safe_json_extract(gen)
-                    label = obj.get("label", "Safe")
-                    prob = float(obj.get("prob", 0.0))
-                except Exception:
-                    label = "Safe"
-                    prob = 0.0
-                results[start + i] = Prediction(label=label, prob=prob, cot=gen, latency_ms=ms, tokens=gen_tokens)
-        return results
-
-
 class StudentBaseline(Baseline):
     """通用：加载某个 StudentModel checkpoint 做推理（用于 sft-no-dpo / dpo-only 对比）。"""
 
@@ -153,6 +75,13 @@ class StudentBaseline(Baseline):
         self.model = StudentModel.load(sft_cfg, ckpt_dir)
         self.model.eval()
         self.device = next(self.model.parameters()).device
+        # Qwen3 的 generation_config.json 默认含 temperature/top_p/top_k，
+        # do_sample=False 时会触发 "not valid and may be ignored" 警告。清除之。
+        gen_cfg = getattr(self.model.base, "generation_config", None)
+        if gen_cfg is not None:
+            gen_cfg.temperature = None
+            gen_cfg.top_p = None
+            gen_cfg.top_k = None
         self.conditional_decoding = conditional_decoding
         from ..data.dataset import SYSTEM_PROMPT_SFT, INSTRUCTION_TEMPLATE
         self.system = SYSTEM_PROMPT_SFT
@@ -197,7 +126,7 @@ def load_blind_set(csv_path: str | Path) -> list[dict]:
 class FileBaseline(Baseline):
     """从预生成的 predictions JSON 加载预测结果，不走 GPU。
 
-    用于 qwen-zeroshot 等需要 GPU 推理但耗时过长的 baseline：
+    用于基线对比中需要 GPU 推理但耗时过长的场景：
     先在服务器上跑批量生成（或用其他方式），保存为 predictions_<name>.json，
     eval 时直接加载，跳过 GPU 推理。
     """

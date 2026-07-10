@@ -65,7 +65,7 @@ implicit_cot:
 eval:
   blind_csv: "data/blind/test_blind.csv"
   threshold: 0.5
-  baselines: ["toxic-bert", "qwen-zeroshot", "sft-no-dpo", "dpo-only"]
+  baselines: ["toxic-bert", "sft-no-dpo", "dpo-only"]
   judge_provider: "agnes"
   judge_swap_positions: true
   judge_reference_guided: true

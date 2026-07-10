@@ -48,6 +48,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 升级 pip
 RUN python -m pip install --upgrade pip
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential
+
 # 安装 Python 依赖（单独一层，requirements.txt 改动才重建）
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple

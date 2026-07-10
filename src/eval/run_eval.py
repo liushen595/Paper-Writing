@@ -34,7 +34,7 @@ def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float
     preds, labels, latencies = [], [], []
     predictions: list[dict] = []
 
-    # 批量推理（QwenZeroShotBaseline 等支持 predict_batch，大幅加速）
+    # 批量推理（支持 predict_batch 的 baseline 可大幅加速）
     has_batch = type(baseline).predict_batch is not Baseline.predict_batch
     if has_batch and len(texts) > 1:
         log.info(f"[{baseline.name}] 批量推理 {len(texts)} 条样本...")
@@ -130,11 +130,9 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, 
 
 
 def _build_baseline(name: str, cfg: ExperimentConfig) -> Baseline:
-    from .baselines import QwenZeroShotBaseline, StudentBaseline, ToxicBertBaseline
+    from .baselines import StudentBaseline, ToxicBertBaseline
     if name == "toxic-bert":
         return ToxicBertBaseline()
-    if name == "qwen-zeroshot":
-        return QwenZeroShotBaseline(model_name=cfg.sft.base_model)
     if name in ("explicit-cot", "sft-no-dpo"):
         return StudentBaseline("sft-no-dpo", cfg.sft.output_dir, cfg.sft, conditional_decoding=False)
     if name == "dpo-only":

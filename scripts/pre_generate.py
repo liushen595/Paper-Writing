@@ -7,10 +7,6 @@
   judge       — 读取 SFT 候选 JSONL，多线程 judge API 生成 DPO 偏好对
   judge_eval  — 读取 predictions JSON，多线程 quality judge 生成评估结果
 
-注意：qwen-zeroshot 不在这里，因为它必须用 Qwen3-8B 模型做 GPU 推理（不是 API 调用）。
-用 qwen-plus API 替代是学术造假（不同模型、不同规模）。qwen-zeroshot 由 eval 阶段的
-predict_batch 在 GPU 上批量完成。
-
 用法:
   # 1. DPO 偏好对生成（读取服务器生成的 candidates.jsonl）
   python -m scripts.pre_generate judge --input data/preference/candidates.jsonl --max-workers 10

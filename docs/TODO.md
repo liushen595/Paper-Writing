@@ -127,8 +127,6 @@ scp ./data/preference/dpo_pairs.jsonl user@server:/home/user/Paper-Writing/data/
 scp user@server:/home/user/Paper-Writing/outputs/eval/predictions_*.json ./outputs/eval/
 ```
 
-> **qwen-zeroshot 不在 API 阶段**——它必须用 Qwen3-8B 模型做 GPU 推理。用 qwen-plus API 替代是学术造假（不同模型/规模）。qwen-zeroshot 由 eval 阶段在 GPU 上批量完成（predict_batch 8x）。
-
 ### 完整执行命令
 
 ```bash
@@ -173,7 +171,6 @@ python -m scripts.run_all --only eval
 # 8. Judge 质量评估 → outputs/eval/judge_eval_predictions_*.json
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_sft-no-dpo.json --max-workers 10
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_dpo-only.json --max-workers 10
-python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_qwen-zeroshot.json --max-workers 10
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_toxic-bert.json --max-workers 10
 ```
 
@@ -235,10 +232,9 @@ python -m scripts.run_all --from sft --to eval 2>&1 | tee outputs/pipeline.log
 
 ## 已知风险 / 注意事项
 
-1. **gen_candidates 是 GPU 瓶颈**：SFT 模型逐样本生成 2 候选，3000 条 ≈ 2.5h。若太慢可减少 limit 或在本地 4060 上跑（4-bit 推理可容纳 8B）。
-2. **qwen-zeroshot 两种跑法**：(a) 服务器 GPU 批量生成（predict_batch 8x 加速，~30-60min）；(b) 本地 API 多线程（~10min）。论文中报告的是同模型 Qwen3-8B 的结果，两种跑法结果一致。
-3. **Phase 3 隐式内化**：本轮未跑，代码已实现（`src/training/implicit_cot.py`），列为 future work。
-4. **Qwen3 权限**：开源 Apache 2.0，无需申请。
+1. **gen_candidates 是 GPU 瓶颈**：SFT 模型批量生成 2 候选，3000 条 ≈ 1-1.5h（batch_size=16）。
+2. **Phase 3 隐式内化**：本轮未跑，代码已实现（`src/training/implicit_cot.py`），列为 future work。
+3. **Qwen3 权限**：开源 Apache 2.0，无需申请。
 
 ## 论文写作待办（代码跑通后）
 - [ ] 跑完 eval 取 `outputs/eval/` 全部图表
@@ -248,4 +244,4 @@ python -m scripts.run_all --from sft --to eval 2>&1 | tee outputs/pipeline.log
 - [ ] 用 `confusion_matrix_*.png` 作论文图 1
 - [ ] 用 `judge_eval_*.json` 的 S1/S2 + bias 数据写 judge 一致性段落
 - [ ] 写 Methodology §5.3 Phase 3 future work 段落
-- [ ] 写 Methodology §6.1 baseline 列表（4 项）
+- [ ] 写 Methodology §6.1 baseline 列表（3 项：toxic-bert / sft-no-dpo / dpo-only）

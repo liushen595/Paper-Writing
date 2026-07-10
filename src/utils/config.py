@@ -84,7 +84,7 @@ class EvalConfig:
     blind_csv: str = "data/blind/test_blind.csv"
     threshold: float = 0.5
     baselines: list[str] = field(
-        default_factory=lambda: ["toxic-bert", "qwen-zeroshot", "explicit-cot", "sft-no-dpo", "dpo-only", "implicit-cot"]
+        default_factory=lambda: ["toxic-bert", "sft-no-dpo", "dpo-only"]
     )
     judge_provider: str = "aliyun"
     judge_swap_positions: bool = True
