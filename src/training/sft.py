@@ -129,9 +129,6 @@ def train_sft(cfg: ExperimentConfig, sft_cfg: Optional[SFTConfig] = None, split:
                 optimizer.zero_grad()
             global_step += 1
             pbar.set_postfix(loss=f"{loss.item():.4f}", cls=f"{outputs['cls_loss'].item():.4f}", clm=f"{outputs['clm_loss'].item():.4f}")
-            if global_step % 20 == 0:
-                log.info(f"epoch={epoch} step={global_step}/{total_steps} loss={loss.item():.4f} "
-                         f"cls={outputs['cls_loss'].item():.4f} clm={outputs['clm_loss'].item():.4f}")
 
         # 每个 epoch 结束保存 checkpoint
         ckpt_path = out_dir / f"checkpoint-{epoch + 1}"

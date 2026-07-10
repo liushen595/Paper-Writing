@@ -255,7 +255,6 @@ def _run_sequential(
         if synth is not None:
             total_ok += 1
             _save_single(synth, train_path, test_path, data_cfg.train_ratio, data_cfg.seed)
-            log.info(f"成功合成并保存，当前累计成功 {total_ok} 条")
         else:
             log.warning(f"合成失败，url={rec.url}")
     log.info(f"合成完成: 共 {total_ok} 条 -> {train_path}(train) + {test_path}(test)")
@@ -299,8 +298,6 @@ def _run_parallel(
             else:
                 with counter_lock:
                     fail_counter += 1
-            if done % 10 == 0 or done == total:
-                log.info(f"多线程进度 [{done}/{total}] 成功 {ok_counter} 失败 {fail_counter}")
     log.info(f"合成完成: 共 {ok_counter} 条 -> {train_path}(train) + {test_path}(test)")
 
 

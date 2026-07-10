@@ -240,8 +240,6 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
                 optimizer.zero_grad()
             global_step += 1
             pbar.set_postfix(s=s, loss=f"{loss.item():.4f}")
-            if global_step % 50 == 0:
-                log.info(f"epoch={epoch} step={global_step} s={s} loss={loss.item():.4f}")
 
         # 每个 epoch 结束保存 checkpoint
         ckpt_path = out_dir / f"checkpoint-{epoch + 1}"
