@@ -38,7 +38,7 @@ class ClassifierHead(nn.Module):
         self.linear = nn.Linear(hidden_size, num_labels)
 
     def forward(self, last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        mask = attention_mask.unsqueeze(-1).float()
+        mask = attention_mask.unsqueeze(-1).to(dtype=last_hidden_state.dtype)
         pooled = (last_hidden_state * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
         return self.linear(self.dropout(pooled))
 
@@ -145,6 +145,7 @@ class StudentModel(nn.Module):
         if cls_head_path.exists():
             state = torch.load(cls_head_path, map_location="cpu")
             obj.classifier.load_state_dict(state)
+            obj.classifier.to(device=device, dtype=torch.bfloat16)
             log.info(f"分类头加载自 {cls_head_path}")
         else:
             log.warning(f"分类头不存在: {cls_head_path}; 使用随机初始化")
