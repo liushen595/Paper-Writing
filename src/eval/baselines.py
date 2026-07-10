@@ -61,16 +61,38 @@ class ToxicBertBaseline(Baseline):
         ms = (time.perf_counter() - t0) * 1000
         return Prediction(label="Threat" if prob > 0.5 else "Safe", prob=prob, latency_ms=ms)
 
+    def predict_batch(self, texts: list[str], batch_size: int = 64) -> list[Prediction]:
+        import time, torch
+        t_start = time.perf_counter()
+        results: list[Prediction] = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            enc = self.tok(batch, return_tensors="pt", truncation=True, max_length=512, padding=True).to(self.device)
+            with torch.no_grad():
+                logits = self.model(**enc).logits
+                probs = torch.softmax(logits, dim=-1)[:, 1].tolist()
+            for prob in probs:
+                results.append(Prediction(
+                    label="Threat" if prob > 0.5 else "Safe",
+                    prob=float(prob), latency_ms=0.0,
+                ))
+        total_ms = (time.perf_counter() - t_start) * 1000
+        per = total_ms / max(1, len(texts))
+        for r in results:
+            r.latency_ms = per
+        return results
+
 
 class StudentBaseline(Baseline):
     """通用：加载某个 StudentModel checkpoint 做推理（用于 sft-no-dpo / dpo-only 对比）。"""
 
-    def __init__(self, name: str, ckpt_dir: str | Path, sft_cfg, conditional_decoding: bool = True):
+    def __init__(self, name: str, ckpt_dir: str | Path, sft_cfg, conditional_decoding: bool = True, batch_size: int = 8):
         from ..models.student import StudentModel, load_tokenizer
         import torch
         self.name = name
         self.ckpt_dir = Path(ckpt_dir)
         self.sft_cfg = sft_cfg
+        self.batch_size = batch_size
         self.tokenizer = load_tokenizer(sft_cfg.base_model)
         self.model = StudentModel.load(sft_cfg, ckpt_dir)
         self.model.eval()
@@ -111,6 +133,81 @@ class StudentBaseline(Baseline):
         ms = (time.perf_counter() - t0) * 1000
         label = "Threat" if cls_prob > 0.5 else "Safe"
         return Prediction(label=label, prob=cls_prob, cot=gen, latency_ms=ms, tokens=out.size(1) - n_prompt)
+
+    def predict_batch(self, texts: list[str]) -> list[Prediction]:
+        """真正的批量推理：分批编码 + 分批 classifier forward + 分批 generate。
+
+        默认逐条调用时 GPU 大量空闲在 CPU tokenize 和 auto-regressive decode 的间隙；
+        批量推理让 GPU 在 generation 阶段同时处理多条序列，显著提升吞吐。
+        """
+        import time, torch
+        t_start = time.perf_counter()
+        all_results: list[Prediction] = []
+
+        for batch_start in tqdm(range(0, len(texts), self.batch_size), desc=f"Eval {self.name}", unit="batch"):
+            batch_texts = texts[batch_start:batch_start + self.batch_size]
+
+            # 构建 prompts
+            prompts = []
+            for text in batch_texts:
+                messages = [
+                    {"role": "system", "content": self.system},
+                    {"role": "user", "content": self.instr_tpl.format(text=text)},
+                ]
+                prompt = self.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+                )
+                prompts.append(prompt)
+
+            # 批量编码 (left-padding, tokenizer 已全局配置)
+            enc = self.tokenizer(prompts, return_tensors="pt", truncation=True, max_length=1024, padding=True).to(self.device)
+            n_prompt = enc["input_ids"].size(1)
+
+            # 批量 classifier forward
+            with torch.no_grad():
+                cls_out = self.model(input_ids=enc["input_ids"], attention_mask=enc["attention_mask"])
+                cls_logits = cls_out["cls_logits"]
+                cls_probs = torch.softmax(cls_logits, dim=-1)[:, 1].tolist()
+
+            # 批量生成
+            gens: list[str] = [""] * len(batch_texts)
+            gen_tokens: list[int] = [0] * len(batch_texts)
+
+            if self.conditional_decoding:
+                threat_idx = [j for j, p in enumerate(cls_probs) if p > 0.5]
+                if threat_idx:
+                    gen_out = self.model.base.generate(
+                        input_ids=enc["input_ids"][threat_idx],
+                        attention_mask=enc["attention_mask"][threat_idx],
+                        max_new_tokens=256, do_sample=False, pad_token_id=self.tokenizer.pad_token_id,
+                    )
+                    for k, j in enumerate(threat_idx):
+                        gen_tok = gen_out[k][n_prompt:]
+                        gens[j] = self.tokenizer.decode(gen_tok, skip_special_tokens=True)
+                        gen_tokens[j] = len(gen_tok)
+            else:
+                gen_out = self.model.base.generate(
+                    input_ids=enc["input_ids"], attention_mask=enc["attention_mask"],
+                    max_new_tokens=256, do_sample=False, pad_token_id=self.tokenizer.pad_token_id,
+                )
+                for j in range(len(batch_texts)):
+                    gen_tok = gen_out[j][n_prompt:]
+                    gens[j] = self.tokenizer.decode(gen_tok, skip_special_tokens=True)
+                    gen_tokens[j] = len(gen_tok)
+
+            for j in range(len(batch_texts)):
+                prob = float(cls_probs[j])
+                label = "Threat" if prob > 0.5 else "Safe"
+                all_results.append(Prediction(
+                    label=label, prob=prob, cot=gens[j],
+                    latency_ms=0.0, tokens=gen_tokens[j],
+                ))
+
+        total_ms = (time.perf_counter() - t_start) * 1000
+        per = total_ms / max(1, len(texts))
+        for r in all_results:
+            r.latency_ms = per
+        return all_results
 
 
 def load_blind_set(csv_path: str | Path) -> list[dict]:

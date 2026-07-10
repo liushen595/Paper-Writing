@@ -617,5 +617,33 @@
 - 多线程 API：judge 6h→10min，zeroshot 3.5h→10min，judge_eval 5h→5min。
 - **总预估**：20h → **7-9h**（GPU 6.5-8.5h + API 25min）。
 
+---
+
+## 2026-07-11 04:45 — eval 批量推理加速（predict_batch 真正实现）
+
+### 问题
+Eval 阶段 `sft-no-dpo` 和 `dpo-only` baseline 在测试集上需要十几小时。根因：
+
+- `StudentBaseline` 没有重写 `predict_batch()`，默认回退到逐条 `predict()`
+- 每条样本独立执行：CPU tokenize → GPU classifier forward → GPU auto-regressive generate (256 tokens) → CPU decode
+- GPU 在 tokenize/decode 期间完全空闲，auto-regressive generation 时 batch_size=1 严重浪费显存带宽
+- `conditional_decoding=False`（sft-no-dpo 和 dpo-only 都如此），每条样本必须生成 256 token 的 CoT
+
+### 修复
+1. **`ToxicBertBaseline.predict_batch`**（新增）：批量 tokenize + 批量 forward，batch_size=64。
+2. **`StudentBaseline.predict_batch`**（新增）：分批编码 + 分批 classifier forward + 分批 generate。
+   - 每批 batch_size=8 条，GPU 同时处理多条序列的 auto-regressive generation
+   - 支持 `conditional_decoding` 分支：仅对 cls_prob>0.5 的样本生成
+   - 内置 tqdm 进度条（按 batch 而非按 sample）
+3. **`StudentBaseline.__init__`**：新增 `batch_size` 参数（默认 8）
+
+### 预期加速
+| 指标 | 旧 (逐条) | 新 (batch=8) |
+|---|---|---|
+| GPU 利用率 | ~20-30% | ~70-90% |
+| 单条延迟 | ~3-8s | 均摊 ~0.5-1s |
+| 3000 样本耗时 | ~10-15h | ~1-2h |
+| 加速比 | — | **6-10x** |
+
 
 
