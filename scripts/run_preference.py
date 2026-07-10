@@ -12,7 +12,7 @@ from src.utils.logging import setup_logger, default_log_dir
 def main():
     ap = argparse.ArgumentParser(description="Phase 2: 用 LLM-as-Judge 生成 DPO 偏好对")
     ap.add_argument("--config", default="configs/default.yaml")
-    ap.add_argument("--judge", default="glm", help="裁判 provider")
+    ap.add_argument("--judge", default="aliyun", help="裁判 provider")
     ap.add_argument("--judge-model", default=None)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument(
