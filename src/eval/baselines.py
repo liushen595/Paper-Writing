@@ -33,8 +33,11 @@ class Baseline:
     def predict(self, text: str) -> Prediction:
         raise NotImplementedError
 
-    def predict_batch(self, texts: list[str]) -> list[Prediction]:
-        return [self.predict(t) for t in tqdm(texts, desc=f"Eval {self.name}", unit="sample")]
+    def predict_batch(self, texts: list[str], show_progress: bool = True) -> list[Prediction]:
+        return [
+            self.predict(t)
+            for t in tqdm(texts, desc=f"Eval {self.name}", unit="sample", disable=not show_progress)
+        ]
 
 
 class ToxicBertBaseline(Baseline):
@@ -62,11 +65,11 @@ class ToxicBertBaseline(Baseline):
         ms = (time.perf_counter() - t0) * 1000
         return Prediction(label="Threat" if prob > 0.5 else "Safe", prob=prob, latency_ms=ms)
 
-    def predict_batch(self, texts: list[str]) -> list[Prediction]:
+    def predict_batch(self, texts: list[str], show_progress: bool = True) -> list[Prediction]:
         import time, torch
         t_start = time.perf_counter()
         results: list[Prediction] = []
-        for i in tqdm(range(0, len(texts), self.batch_size), desc="Eval toxic-bert", unit="batch"):
+        for i in tqdm(range(0, len(texts), self.batch_size), desc="Eval toxic-bert", unit="batch", disable=not show_progress):
             batch = texts[i:i + self.batch_size]
             enc = self.tok(batch, return_tensors="pt", truncation=True, max_length=512, padding=True).to(self.device)
             with torch.no_grad():
@@ -135,7 +138,7 @@ class StudentBaseline(Baseline):
         label = "Threat" if cls_prob > 0.5 else "Safe"
         return Prediction(label=label, prob=cls_prob, cot=gen, latency_ms=ms, tokens=out.size(1) - n_prompt)
 
-    def predict_batch(self, texts: list[str]) -> list[Prediction]:
+    def predict_batch(self, texts: list[str], show_progress: bool = True) -> list[Prediction]:
         """真正的批量推理：分批编码 + 分批 classifier forward + 分批 generate。
 
         默认逐条调用时 GPU 大量空闲在 CPU tokenize 和 auto-regressive decode 的间隙；
@@ -145,7 +148,7 @@ class StudentBaseline(Baseline):
         t_start = time.perf_counter()
         all_results: list[Prediction] = []
 
-        for batch_start in tqdm(range(0, len(texts), self.batch_size), desc=f"Eval {self.name}", unit="batch"):
+        for batch_start in tqdm(range(0, len(texts), self.batch_size), desc=f"Eval {self.name}", unit="batch", disable=not show_progress):
             batch_texts = texts[batch_start:batch_start + self.batch_size]
 
             # 构建 prompts

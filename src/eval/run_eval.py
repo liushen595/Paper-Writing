@@ -89,7 +89,7 @@ def run_one_baseline(
         for offset in tqdm(range(0, len(rows_left), batch_size), desc=f"Eval {baseline.name}", unit="batch"):
             batch_rows = rows_left[offset:offset + batch_size]
             batch_texts = [r.get("text", "") for r in batch_rows]
-            batch_preds = baseline.predict_batch(batch_texts)
+            batch_preds = baseline.predict_batch(batch_texts, show_progress=False)
             predictions.extend(_prediction_record(r, pred) for r, pred in zip(batch_rows, batch_preds))
             if checkpoint_path:
                 _write_json_atomic(checkpoint_path, predictions)
