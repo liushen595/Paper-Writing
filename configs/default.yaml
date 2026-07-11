@@ -27,8 +27,8 @@ sft:
   use_roberta_distill: false
   learning_rate: 2.0e-4
   num_epochs: 3
-  per_device_batch_size: 1       # 8B + 1024 tokens 在 RTX 4090 上使用安全微批量
-  gradient_accumulation_steps: 16 # 等效 batch=16
+  per_device_batch_size: 2       # RTX 4090 24GB 推荐从 2 起步，再视显存提高到 3-4
+  gradient_accumulation_steps: 8  # 等效 batch=16
   warmup_ratio: 0.03
   max_seq_len: 1024               # RTX 4060: 512; 服务器: 1024
   early_stopping_patience: 3
@@ -39,8 +39,8 @@ dpo:
   beta: 0.1
   learning_rate: 5.0e-6
   num_epochs: 1
-  per_device_batch_size: 1       # DPO 同时涉及 chosen/rejected，24GB 卡使用安全微批量
-  gradient_accumulation_steps: 16 # 等效 batch=16
+  per_device_batch_size: 2       # DPO 实际长度更敏感，4090 先从 2 起步
+  gradient_accumulation_steps: 8  # 等效 batch=16
   max_prompt_len: 256
   max_length: 1024                # RTX 4060: 512; 服务器: 1024
   early_stopping_patience: 2
@@ -55,8 +55,8 @@ implicit_cot:
   left_removal: true
   learning_rate: 1.0e-5
   num_epochs: 20
-  per_device_batch_size: 1
-  gradient_accumulation_steps: 16 # 等效 batch=16
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 8  # 等效 batch=16
   max_seq_len: 1024               # RTX 4060: 512; 服务器: 1024
   early_stopping_patience: 3
   early_stopping_min_delta: 1.0e-4
