@@ -125,7 +125,7 @@ class AliyunClient(BaseClient):
 _RPM_MSGS = ("requests rate limit exceeded", "you exceeded your current requests")
 _TPM_MSGS = ("allocated quota exceeded", "you exceeded your current quota")
 _BURST_MSGS = ("request rate increased too quickly",)
-_SAFETY_MSGS = ("output data may contain inappropriate content",)
+_SAFETY_MSGS = ("output data may contain inappropriate content", "input text data may contain inappropriate content")
 
 
 def _classify_error(body: str) -> Exception:

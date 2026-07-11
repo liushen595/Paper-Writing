@@ -139,11 +139,15 @@ def build_preference_pairs(
         if len(cands) < 2:
             continue
         a, b = cands[0], cands[1]
-        if swap_positions:
-            res = judge_with_swap(judge_client, prompt, a, b, ref_label, ref_cot, reference_guided)
-        else:
-            r = _judge_once(judge_client, prompt, a, b, ref_label, ref_cot, reference_guided)
-            res = (a, b) if r["winner"] == "A" else ((b, a) if r["winner"] == "B" else None)
+        try:
+            if swap_positions:
+                res = judge_with_swap(judge_client, prompt, a, b, ref_label, ref_cot, reference_guided)
+            else:
+                r = _judge_once(judge_client, prompt, a, b, ref_label, ref_cot, reference_guided)
+                res = (a, b) if r["winner"] == "A" else ((b, a) if r["winner"] == "B" else None)
+        except Exception as e:
+            log.warning(f"Judge 调用异常，跳过样本: {e}")
+            continue
         if res is None:
             continue
         chosen, rejected = res
