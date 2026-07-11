@@ -62,7 +62,12 @@ STAGE_COMMANDS: dict[str, list[str]] = {
 LIMIT_STAGES: set[str] = {"sft", "gen_candidates", "eval"}
 
 
-def _fill_command(stage: str, limit: int | None) -> list[str]:
+def _fill_command(
+    stage: str,
+    limit: int | None,
+    batch_size: int | None = None,
+    gradient_accumulation_steps: int | None = None,
+) -> list[str]:
     """填充阶段命令模板，去掉空占位符。"""
     template = STAGE_COMMANDS[stage]
     cmd: list[str] = []
@@ -72,6 +77,11 @@ def _fill_command(stage: str, limit: int | None) -> list[str]:
                 cmd.extend(["--limit", str(limit)])
             continue
         cmd.append(part)
+    if stage in {"sft", "gen_candidates", "dpo", "eval"}:
+        if batch_size is not None:
+            cmd.extend(["--batch-size", str(batch_size)])
+        if stage in {"sft", "dpo"} and gradient_accumulation_steps is not None:
+            cmd.extend(["--gradient-accumulation-steps", str(gradient_accumulation_steps)])
     return cmd
 
 
@@ -101,9 +111,17 @@ def main():
                     help=f"只跑指定阶段（GPU 阶段: {', '.join(GPU_STAGES)})")
     ap.add_argument("--limit", type=int, default=None,
                     help="限制样本数（传给 sft/gen_candidates/eval）")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help="覆盖 sft/gen_candidates/dpo/eval 的 batch size")
+    ap.add_argument("--gradient-accumulation-steps", type=int, default=None,
+                    help="覆盖 sft/dpo 的梯度累积步数")
     ap.add_argument("--use-hf-mirror", action="store_true", default=False,
                     help="使用 HuggingFace 镜像站 hf-mirror.com 加速下载")
     args = ap.parse_args()
+    if args.batch_size is not None and args.batch_size < 1:
+        ap.error("--batch-size 必须大于等于 1")
+    if args.gradient_accumulation_steps is not None and args.gradient_accumulation_steps < 1:
+        ap.error("--gradient-accumulation-steps 必须大于等于 1")
 
     # 确定要跑的阶段列表
     if args.only:
@@ -133,7 +151,12 @@ def main():
         print(f"  python -m scripts.pre_generate judge_eval --input ... --max-workers 10")
 
     for stage in chosen:
-        cmd = _fill_command(stage, limit=args.limit)
+        cmd = _fill_command(
+            stage,
+            limit=args.limit,
+            batch_size=args.batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+        )
         _run(cmd, stage, use_hf_mirror=args.use_hf_mirror)
 
     print("\n所有指定 GPU 阶段执行完毕。")

@@ -15,11 +15,14 @@ def main():
     ap.add_argument("--config", default="configs/default.yaml")
     ap.add_argument("--baselines", nargs="*", default=None, help="覆盖配置中的 baselines 列表")
     ap.add_argument("--limit", type=int, default=None, help="限制盲测样本数（smoke test 用）")
+    ap.add_argument("--batch-size", type=int, default=1, help="GPU baseline 推理批量大小")
     ap.add_argument("--pre-generated", nargs="*", default=None,
                     help="使用预生成预测，跳过 GPU 推理。格式: name=path（如 sft-no-dpo=outputs/eval/predictions_sft-no-dpo.json）。可指定多个。")
     ap.add_argument("--use-hf-mirror", action="store_true", default=None,
                     help="使用 HuggingFace 镜像站 hf-mirror.com 加速下载（覆盖配置文件）")
     args = ap.parse_args()
+    if args.batch_size < 1:
+        ap.error("--batch-size 必须大于等于 1")
     cfg = load_config(args.config)
     if args.use_hf_mirror is not None:
         cfg.use_hf_mirror = args.use_hf_mirror
@@ -33,7 +36,10 @@ def main():
             pre_gen[name] = path
         log.info(f"预生成预测: {pre_gen}")
 
-    run_eval(cfg, baseline_names=args.baselines, limit=args.limit, pre_generated=pre_gen)
+    run_eval(
+        cfg, baseline_names=args.baselines, limit=args.limit,
+        pre_generated=pre_gen, batch_size=args.batch_size,
+    )
 
 
 if __name__ == "__main__":

@@ -72,7 +72,7 @@ def run_one_baseline(baseline: Baseline, blind_csv: str | Path, threshold: float
 
 
 def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, limit: Optional[int] = None,
-             pre_generated: Optional[dict[str, str]] = None) -> Path:
+             pre_generated: Optional[dict[str, str]] = None, batch_size: int = 8) -> Path:
     eval_cfg = cfg.eval
     names = baseline_names or eval_cfg.baselines
     blind_csv = (PROJECT_ROOT / eval_cfg.blind_csv).resolve()
@@ -97,7 +97,7 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, 
             binary = compute_binary_metrics(preds, labels).as_dict()
             latency = compute_latency(latencies).__dict__
         else:
-            baseline = _build_baseline(name, cfg)
+            baseline = _build_baseline(name, cfg, batch_size=batch_size)
             rep = run_one_baseline(baseline, blind_csv, threshold=eval_cfg.threshold, limit=limit)
             predictions = rep.predictions
             binary = rep.binary
@@ -129,14 +129,14 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, 
     return table_path
 
 
-def _build_baseline(name: str, cfg: ExperimentConfig) -> Baseline:
+def _build_baseline(name: str, cfg: ExperimentConfig, batch_size: int = 8) -> Baseline:
     from .baselines import StudentBaseline, ToxicBertBaseline
     if name == "toxic-bert":
-        return ToxicBertBaseline()
+        return ToxicBertBaseline(batch_size=batch_size)
     if name in ("explicit-cot", "sft-no-dpo"):
-        return StudentBaseline("sft-no-dpo", cfg.sft.output_dir, cfg.sft, conditional_decoding=False)
+        return StudentBaseline("sft-no-dpo", cfg.sft.output_dir, cfg.sft, conditional_decoding=False, batch_size=batch_size)
     if name == "dpo-only":
-        return StudentBaseline("dpo-only", cfg.dpo.output_dir, cfg.sft, conditional_decoding=False)
+        return StudentBaseline("dpo-only", cfg.dpo.output_dir, cfg.sft, conditional_decoding=False, batch_size=batch_size)
     if name == "implicit-cot":
         raise NotImplementedError("implicit-cot baseline 已退役（Phase 3 隐式内化改为 future work）")
     if name == "roberta-large":

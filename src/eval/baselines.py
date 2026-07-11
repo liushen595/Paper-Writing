@@ -42,11 +42,12 @@ class ToxicBertBaseline(Baseline):
 
     name = "toxic-bert"
 
-    def __init__(self, model_name: str = "unitary/toxic-bert"):
+    def __init__(self, model_name: str = "unitary/toxic-bert", batch_size: int = 8):
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         import torch
         self.tok = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.batch_size = batch_size
         self.model.eval()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.to(self.device)
@@ -61,12 +62,12 @@ class ToxicBertBaseline(Baseline):
         ms = (time.perf_counter() - t0) * 1000
         return Prediction(label="Threat" if prob > 0.5 else "Safe", prob=prob, latency_ms=ms)
 
-    def predict_batch(self, texts: list[str], batch_size: int = 64) -> list[Prediction]:
+    def predict_batch(self, texts: list[str]) -> list[Prediction]:
         import time, torch
         t_start = time.perf_counter()
         results: list[Prediction] = []
-        for i in tqdm(range(0, len(texts), batch_size), desc="Eval toxic-bert", unit="batch"):
-            batch = texts[i:i + batch_size]
+        for i in tqdm(range(0, len(texts), self.batch_size), desc="Eval toxic-bert", unit="batch"):
+            batch = texts[i:i + self.batch_size]
             enc = self.tok(batch, return_tensors="pt", truncation=True, max_length=512, padding=True).to(self.device)
             with torch.no_grad():
                 logits = self.model(**enc).logits

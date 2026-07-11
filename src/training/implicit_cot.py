@@ -204,8 +204,9 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
     optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=ic_cfg.learning_rate)
 
     collator = SFTCollator(tokenizer, max_seq_len=ic_cfg.max_seq_len)
-    T = len(base_cache) * ic_cfg.num_epochs
-    global_step = start_epoch * len(base_cache)
+    batches_per_epoch = math.ceil(len(base_cache) / ic_cfg.per_device_batch_size)
+    T = batches_per_epoch * ic_cfg.num_epochs
+    global_step = start_epoch * batches_per_epoch
     prev_s = removed_so_far
 
     best_val_loss = float("inf")
@@ -216,17 +217,31 @@ def train_implicit_cot(cfg: ExperimentConfig, ic_cfg: Optional[ImplicitCoTConfig
     for epoch in range(start_epoch, ic_cfg.num_epochs):
         epoch_indices = list(range(len(base_cache)))
         random.shuffle(epoch_indices)
-        pbar = tqdm(epoch_indices, desc=f"ImplicitCoT epoch {epoch+1}/{ic_cfg.num_epochs}", unit="sample")
-        for idx in pbar:
+        epoch_batches = [
+            epoch_indices[start:start + ic_cfg.per_device_batch_size]
+            for start in range(0, len(epoch_indices), ic_cfg.per_device_batch_size)
+        ]
+        pbar = tqdm(epoch_batches, desc=f"ImplicitCoT epoch {epoch+1}/{ic_cfg.num_epochs}", unit="batch")
+        for batch_indices in pbar:
             t = global_step
             s = removal_schedule(t, T, ic_cfg.delta_per_epoch) + removal_smoothing_offset(ic_cfg.lambda_smoothing)
             if s > prev_s and ic_cfg.reset_optimizer_on_removal:
                 optimizer = reset_optimizer(optimizer)
                 log.info(f"step={t} 移除数 {prev_s}->{s}, 优化器已重置")
                 prev_s = s
-            base = base_cache[idx]
-            new_ids, new_labels = apply_removal(base["input_ids"], base["labels_clm"], spans[idx], s, left=ic_cfg.left_removal)
-            batch = collator([{"input_ids": new_ids, "labels_clm": new_labels, "labels_cls": base["labels_cls"]}])
+            batch_items = []
+            for idx in batch_indices:
+                base = base_cache[idx]
+                new_ids, new_labels = apply_removal(
+                    base["input_ids"], base["labels_clm"], spans[idx], s,
+                    left=ic_cfg.left_removal,
+                )
+                batch_items.append({
+                    "input_ids": new_ids,
+                    "labels_clm": new_labels,
+                    "labels_cls": base["labels_cls"],
+                })
+            batch = collator(batch_items)
             batch = {k: v.to(device) for k, v in batch.__dict__.items()}
             outputs = model(
                 input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
