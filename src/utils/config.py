@@ -100,6 +100,7 @@ class ExperimentConfig:
     implicit_cot: ImplicitCoTConfig = field(default_factory=ImplicitCoTConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     seed: int = 42
+    use_hf_mirror: bool = False
 
 
 def _resolve_paths(cfg_dict: dict[str, Any]) -> dict[str, Any]:
@@ -135,6 +136,8 @@ def _dict_to_config(d: dict[str, Any]) -> ExperimentConfig:
     if "seed" in d:
         cfg.seed = int(d["seed"])
         cfg.data.seed = cfg.seed
+    if "use_hf_mirror" in d:
+        cfg.use_hf_mirror = bool(d["use_hf_mirror"])
     return cfg
 
 

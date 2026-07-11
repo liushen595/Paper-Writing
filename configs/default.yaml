@@ -1,6 +1,6 @@
 # 犯罪意图识别框架 — 实验配置
-# 当前开发机 RTX 4060 8GB，参数调至最保守；服务器训练时按注释恢复
 seed: 42
+use_hf_mirror: false
 
 data:
   raw_doj: "crawler/output/doj_raw.jsonl"

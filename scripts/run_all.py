@@ -13,6 +13,9 @@
   python -m scripts.run_all --only sft                     # 只跑 sft
   python -m scripts.run_all --only gen_candidates --limit 3000  # 生成候选
 
+  # 使用 HF 镜像站加速下载
+  python -m scripts.run_all --only haystack --use-hf-mirror
+
   # 本地：跑 API 阶段（多线程，无需 GPU）
   python -m scripts.pre_generate judge --input data/preference/candidates.jsonl --max-workers 10
   python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_sft-no-dpo.json --max-workers 10
@@ -30,11 +33,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-from src.utils.env import PROJECT_ROOT
+from src.utils.env import PROJECT_ROOT, HF_MIRROR_ENDPOINT
 
 # GPU 阶段（run_all 驱动 subprocess）
 GPU_STAGES: list[str] = ["haystack", "sft", "gen_candidates", "dpo", "blind", "eval"]
@@ -71,12 +75,17 @@ def _fill_command(stage: str, limit: int | None) -> list[str]:
     return cmd
 
 
-def _run(cmd: list[str], stage: str) -> None:
+def _run(cmd: list[str], stage: str, use_hf_mirror: bool = False) -> None:
     """执行单条命令，失败即退出。"""
+    env = os.environ.copy()
+    if use_hf_mirror:
+        env.setdefault("HF_ENDPOINT", HF_MIRROR_ENDPOINT)
     print(f"\n{'='*60}")
     print(f"[{stage}] {' '.join(cmd)}")
+    if use_hf_mirror:
+        print(f"[{stage}] HF_ENDPOINT={env['HF_ENDPOINT']}")
     print(f"{'='*60}")
-    result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
+    result = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env)
     if result.returncode != 0:
         print(f"[{stage}] 失败，返回码 {result.returncode}")
         sys.exit(result.returncode)
@@ -92,6 +101,8 @@ def main():
                     help=f"只跑指定阶段（GPU 阶段: {', '.join(GPU_STAGES)})")
     ap.add_argument("--limit", type=int, default=None,
                     help="限制样本数（传给 sft/gen_candidates/eval）")
+    ap.add_argument("--use-hf-mirror", action="store_true", default=False,
+                    help="使用 HuggingFace 镜像站 hf-mirror.com 加速下载")
     args = ap.parse_args()
 
     # 确定要跑的阶段列表
@@ -114,6 +125,8 @@ def main():
     print(f"将执行 GPU 阶段: {' -> '.join(chosen)}")
     if args.limit:
         print(f"limit={args.limit}（传给支持的阶段）")
+    if args.use_hf_mirror:
+        print(f"使用 HF 镜像站: {HF_MIRROR_ENDPOINT}")
     if "judge" in chosen or "judge_eval" in chosen:
         print("\n注意: judge/judge_eval 是 API 阶段，请用:")
         print(f"  python -m scripts.pre_generate judge --input ... --max-workers 10")
@@ -121,7 +134,7 @@ def main():
 
     for stage in chosen:
         cmd = _fill_command(stage, limit=args.limit)
-        _run(cmd, stage)
+        _run(cmd, stage, use_hf_mirror=args.use_hf_mirror)
 
     print("\n所有指定 GPU 阶段执行完毕。")
     if "gen_candidates" in chosen:

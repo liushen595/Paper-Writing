@@ -27,7 +27,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from src.utils.env import PROJECT_ROOT
+from src.utils.env import PROJECT_ROOT, setup_hf_mirror
 from src.utils.logging import get_logger, setup_logger, default_log_dir
 from src.utils.seed import set_seed
 
@@ -58,7 +58,11 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--min-text-len", type=int, default=20, help="最短字符数过滤")
     ap.add_argument("--max-text-len", type=int, default=2000, help="最长字符数过滤")
+    ap.add_argument("--use-hf-mirror", action="store_true", default=False,
+                    help="使用 HuggingFace 镜像站 hf-mirror.com 加速下载")
     args = ap.parse_args()
+
+    setup_hf_mirror(args.use_hf_mirror)
 
     setup_logger(log_file=default_log_dir() / "prepare_haystack.log")
     set_seed(args.seed)

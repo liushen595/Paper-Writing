@@ -14,6 +14,17 @@ except ImportError:  # python-dotenv 未安装时的兜底
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
+
+
+def setup_hf_mirror(use_mirror: bool) -> None:
+    """设置 HuggingFace 镜像站环境变量。
+
+    必须在任何 HF 库（transformers, datasets, huggingface_hub）导入之前调用。
+    """
+    if use_mirror:
+        os.environ.setdefault("HF_ENDPOINT", HF_MIRROR_ENDPOINT)
+
 
 def _load_env() -> None:
     env_path = PROJECT_ROOT / ".env"
