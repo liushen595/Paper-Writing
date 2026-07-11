@@ -18,7 +18,7 @@ from src.utils.logging import setup_logger, default_log_dir
 def main():
     ap = argparse.ArgumentParser(description="Phase A: SFT 候选生成（GPU，无 API）")
     ap.add_argument("--config", default="configs/default.yaml")
-    ap.add_argument("--limit", type=int, default=None, help="限制样本数")
+    ap.add_argument("--limit", type=int, default=3000, help="限制样本数")
     ap.add_argument("--out", default=None, help="输出路径（默认 data/preference/candidates.jsonl）")
     args = ap.parse_args()
     cfg = load_config(args.config)
