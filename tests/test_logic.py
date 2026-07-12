@@ -20,6 +20,28 @@ def test_metrics_binary():
     assert m.confusion_matrix().shape == (2, 2)
 
 
+def test_toxic_bert_multilabel_probability():
+    import torch
+    from src.eval.baselines import multilabel_probability, resolve_multilabel_index
+
+    label2id = {"toxic": 0, "severe_toxic": 1, "threat": 3}
+    logits = torch.tensor([[2.0, -2.0, 0.0, -1.0]])
+    index = resolve_multilabel_index(label2id, "toxic")
+    assert index == 0
+    assert multilabel_probability(logits, index).item() == pytest.approx(torch.sigmoid(torch.tensor(2.0)).item())
+    with pytest.raises(ValueError):
+        resolve_multilabel_index(label2id, "criminal_intent")
+
+
+def test_parse_final_generation_label():
+    from src.eval.generation_diagnostics import parse_final_label
+
+    assert parse_final_label("<thought>safe context</thought>\nSafe") == "Safe"
+    assert parse_final_label("analysis mentions Safe\nThreat.") == "Threat"
+    assert parse_final_label("Threat\nmore text") is None
+    assert parse_final_label("analysis only") is None
+
+
 def test_latency():
     from src.eval.metrics import compute_latency
     res = compute_latency([{"ms": 10, "tokens": 5}, {"ms": 30, "tokens": 15}])

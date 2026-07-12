@@ -107,13 +107,15 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 
 ## 6. 实验设计
 
-### 6.1 Baselines
-1. **toxic-bert**（判别式）：`unitary/toxic-bert`，统计隐式漏报。
-2. **sft-no-dpo**（消融）：Phase 1 SFT 模型（未对齐 DPO），验证 DPO 对 FPR 的贡献。
-3. **dpo-only**（消融）：Phase 2 DPO 后 LoRA 权重 + SFT 分类头，验证 DPO 对 TPR/FPR 的边际贡献。
+### 6.1 对比系统
+1. **toxic-bert**（域外参考 baseline）：`unitary/toxic-bert` 的 `toxic` 多标签输出头经 sigmoid 得到概率。它测量广义毒性而非犯罪意图，不能视为同任务模型。
+2. **sft-no-dpo**（消融）：Phase 1 SFT 模型，用于观察不进行偏好优化时的表现。
+3. **ThreatWeaver**（主方法）：从 SFT adapter 继续 DPO 的完整流程。DPO 仅更新语言模型 LoRA，评估 checkpoint 复用 SFT 分类头。
 
 > Phase 3 隐式 CoT 内化（implicit-cot baseline）因时间约束未纳入本轮实验，列为 future work。
 > 原 `roberta-large` baseline 已移除：本任务以 LLM 内化为主路线，RoBERTa 蒸馏源保留为 Phase 1 可选增强，不作单独 baseline。
+
+当前实现同时存在生成标签和分类头两个输出端。正式分类头指标与严格解析生成末尾标签的诊断指标分开报告；生成端分析属于发现接口错位后的 post-hoc 诊断，不替代预设主指标。SFT 分类头训练时池化了 teacher-forced completion，而推理时仅看到 prompt；DPO 又改变 LoRA 表示但不更新分类头。因此分类头退化应解释为实现接口风险，不能直接归因于 CoT 蒸馏思想。
 
 ### 6.2 量化指标矩阵
 - 硬阈值判定（prob > 0.5 即 Threat）。
@@ -129,10 +131,10 @@ $$\mathcal{L}_{SFT} = \alpha \cdot \mathcal{L}_{cls} + \beta \cdot \mathcal{L}_{
 - **偏差监控**：位置偏差（biased-first 率）、冗长偏差、自我增强偏差（避免同族模型既当系统又当裁判）。
 - **开源微调 judge**：微调 Qwen3-8B 三分类 judge，统计一致性 16%→65%、格式错误→0% 的提升。
 
-## 7. 结果解释框架（待实验后填充）
-- 表 1：盲测 TPR/FPR/F1 对比（预期本方法碾压 toxic-bert）。
+## 7. 结果解释框架
+- 表 1：盲测 TPR/FPR/F1 对比，不预设方法优于参考 baseline 或消融。
 - 表 2：各 baseline 推理延迟对比（mean/p95 ms、Tokens/Second）。
-- 图 1：混淆矩阵可视化 FPR 降低。
+- 图 1：混淆矩阵呈现真实 TPR/FPR 权衡。
 - 质性图：LLM-judge 评分分布 + 偏差监控雷达图。
 
 ## 8. 伦理与局限

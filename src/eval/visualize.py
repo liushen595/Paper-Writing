@@ -82,7 +82,7 @@ def plot_tpr_fpr_bars(reports: list[dict], out_path: Path) -> None:
     ax.set_xticklabels(names, rotation=20, ha="right")
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Rate")
-    ax.set_title("TPR / FPR across baselines")
+    ax.set_title("TPR / FPR across evaluated systems")
     ax.legend(loc="upper right")
     ax.grid(axis="y", linestyle="--", alpha=0.5)
     for i, (t, f) in enumerate(zip(tpr, fpr)):
@@ -109,11 +109,7 @@ def write_metrics_csv(reports: list[dict], out_path: Path) -> None:
 
 
 def write_latency_table(reports: list[dict], out_path: Path) -> None:
-    """Table 2 显式 vs 隐式延迟对比 markdown 表。
-
-    按 baseline 行展开 mean_ms / p95_ms / tokens_per_sec，重点关注
-    explicit-cot vs implicit-cot 的延迟比（论文核心工程价值论据）。
-    """
+    """按评估系统输出 mean_ms / p95_ms / tokens_per_sec。"""
     if not reports:
         return
     cols = ["baseline", "mean_ms", "p95_ms", "tokens_per_sec"]
@@ -129,18 +125,9 @@ def write_latency_table(reports: list[dict], out_path: Path) -> None:
         ]) + " |")
     table = f"{header}\n{sep}\n" + "\n".join(body_lines)
 
-    # 显式 vs 隐式延迟比
-    explicit = next((r for r in reports if r.get("baseline") == "explicit-cot"), None)
-    implicit = next((r for r in reports if r.get("baseline") == "implicit-cot"), None)
-    note = ""
-    if explicit and implicit and implicit.get("mean_ms", 0) > 0:
-        speedup = explicit["mean_ms"] / implicit["mean_ms"]
-        note = f"\n\n**Explicit vs Implicit 加速比**: {speedup:.2f}× （explicit-cot {explicit['mean_ms']:.1f}ms → implicit-cot {implicit['mean_ms']:.1f}ms）"
-
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("# Table 2: 推理延迟对比\n\n")
         f.write(table)
-        f.write(note)
         f.write("\n")
     log.info(f"延迟表 -> {out_path}")
 

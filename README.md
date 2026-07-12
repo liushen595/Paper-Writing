@@ -207,19 +207,19 @@ python -m scripts.run_implicit_cot
 ### 评估
 
 ```bash
-# 在盲测集上跑所有 baseline
+# 在盲测集上跑全部对比系统
 python -m scripts.run_eval
 
 # 可选：LLM-as-Judge 质量评估
 python -m scripts.run_judge_eval --predictions outputs/eval/predictions_explicit-cot.json
 ```
 
-**评估基线**：
-1. `toxic-bert`：判别式模型，统计隐式漏报
-2. `qwen-zeroshot`：未微调 Qwen3-8B 零样本
-3. `explicit-cot`：Phase 1 显式 CoT 模型（消融）
-4. `sft-no-dpo`：未经 DPO 的模型（消融 DPO 贡献）
-5. `implicit-cot`：Phase 3 内化模型（本方法）
+**对比系统**：
+1. `toxic-bert`：域外广义毒性参考 baseline
+2. `sft-no-dpo`：未经 DPO 的 SFT 消融
+3. `threatweaver`：SFT→DPO 主方法
+
+生成式输出可用 `python -m scripts.diagnose_generation outputs/eval/predictions_sft-no-dpo.json outputs/eval/predictions_threatweaver.json` 做严格末尾标签诊断。该诊断与分类头主指标分开报告。
 
 **量化指标**：FPR / TPR (Recall) / F1 / Precision / Accuracy / 混淆矩阵 / 推理延迟 (ms, Tokens/s)
 

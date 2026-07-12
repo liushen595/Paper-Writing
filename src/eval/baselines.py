@@ -1,4 +1,4 @@
-"""评估基线：toxic-bert / sft-no-dpo / dpo-only。
+"""评估系统：toxic-bert / sft-no-dpo / ThreatWeaver。
 
 每个 baseline 暴露 predict(text) -> (label, prob, cot?) 的统一接口。
 支持批量推理（predict_batch）加速评估。
@@ -50,6 +50,7 @@ class ToxicBertBaseline(Baseline):
         import torch
         self.tok = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.toxic_label_index = resolve_multilabel_index(self.model.config.label2id, "toxic")
         self.batch_size = batch_size
         self.model.eval()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -61,7 +62,7 @@ class ToxicBertBaseline(Baseline):
         inputs = self.tok(text, return_tensors="pt", truncation=True, max_length=512).to(self.device)
         with torch.no_grad():
             logits = self.model(**inputs).logits
-            prob = float(torch.softmax(logits, dim=-1)[0, 1].item())
+            prob = float(multilabel_probability(logits, self.toxic_label_index)[0].item())
         ms = (time.perf_counter() - t0) * 1000
         return Prediction(label="Threat" if prob > 0.5 else "Safe", prob=prob, latency_ms=ms)
 
@@ -74,7 +75,7 @@ class ToxicBertBaseline(Baseline):
             enc = self.tok(batch, return_tensors="pt", truncation=True, max_length=512, padding=True).to(self.device)
             with torch.no_grad():
                 logits = self.model(**enc).logits
-                probs = torch.softmax(logits, dim=-1)[:, 1].tolist()
+                probs = multilabel_probability(logits, self.toxic_label_index).tolist()
             for prob in probs:
                 results.append(Prediction(
                     label="Threat" if prob > 0.5 else "Safe",
@@ -87,8 +88,24 @@ class ToxicBertBaseline(Baseline):
         return results
 
 
+def resolve_multilabel_index(label2id: dict, label: str) -> int:
+    """按配置解析多标签输出头，拒绝依赖模型版本的硬编码索引。"""
+    normalized = {str(name).lower(): int(index) for name, index in label2id.items()}
+    if label not in normalized:
+        raise ValueError(f"模型缺少必需的多标签输出头: {label}; labels={sorted(normalized)}")
+    return normalized[label]
+
+
+def multilabel_probability(logits, label_index: int):
+    """返回指定独立标签的 sigmoid 概率。"""
+    import torch
+    if logits.ndim != 2 or not 0 <= label_index < logits.size(1):
+        raise ValueError(f"无效的多标签 logits 形状或索引: shape={tuple(logits.shape)}, index={label_index}")
+    return torch.sigmoid(logits[:, label_index])
+
+
 class StudentBaseline(Baseline):
-    """通用：加载某个 StudentModel checkpoint 做推理（用于 sft-no-dpo / dpo-only 对比）。"""
+    """加载 StudentModel checkpoint（用于 SFT 消融与 ThreatWeaver 主模型）。"""
 
     def __init__(self, name: str, ckpt_dir: str | Path, sft_cfg, conditional_decoding: bool = True, batch_size: int = 8):
         from ..models.student import StudentModel, load_tokenizer

@@ -170,7 +170,7 @@ python -m scripts.run_all --only eval
 
 # 8. Judge 质量评估 → outputs/eval/judge_eval_predictions_*.json
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_sft-no-dpo.json --max-workers 10
-python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_dpo-only.json --max-workers 10
+python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_threatweaver.json --max-workers 10
 python -m scripts.pre_generate judge_eval --input outputs/eval/predictions_toxic-bert.json --max-workers 10
 ```
 
@@ -202,7 +202,7 @@ python -m scripts.run_all --from sft --to eval 2>&1 | tee outputs/pipeline.log
 | gen_candidates (3000) | ~2.5 h | SFT 模型生成 2 候选/样本 |
 | dpo | ~0.5-1 h | batch=4，~1500 偏好对 |
 | blind | < 1 min | 本地组装 |
-| eval (GPU baseline) | ~1.5-2 h | toxic-bert + sft-no-dpo + dpo-only，3126 条 |
+| eval (GPU systems) | ~1.5-2 h | toxic-bert + sft-no-dpo + threatweaver |
 | **GPU 小计** | **~6.5-8.5 h** | |
 
 ### API 阶段（本地多线程，qwen-plus 30k RPM）
@@ -244,4 +244,4 @@ python -m scripts.run_all --from sft --to eval 2>&1 | tee outputs/pipeline.log
 - [ ] 用 `confusion_matrix_*.png` 作论文图 1
 - [ ] 用 `judge_eval_*.json` 的 S1/S2 + bias 数据写 judge 一致性段落
 - [ ] 写 Methodology §5.3 Phase 3 future work 段落
-- [ ] 写 Methodology §6.1 baseline 列表（3 项：toxic-bert / sft-no-dpo / dpo-only）
+- [x] 写 Methodology §6.1 对比系统（toxic-bert / sft-no-dpo / threatweaver）

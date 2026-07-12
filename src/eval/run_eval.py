@@ -43,8 +43,11 @@ def _prediction_record(row: dict, pred) -> dict:
     }
 
 
-def _report_from_predictions(name: str, predictions: list[dict]) -> EvalReport:
-    preds = [1 if p.get("model_label", "Safe") == "Threat" else 0 for p in predictions]
+def _report_from_predictions(name: str, predictions: list[dict], threshold: float = 0.5) -> EvalReport:
+    probs = [float(p.get("model_prob", 0.0)) for p in predictions]
+    preds = threshold_predictions(probs, threshold)
+    for prediction, pred in zip(predictions, preds):
+        prediction["model_label"] = "Threat" if pred == 1 else "Safe"
     labels = [label_to_int(p.get("ref_label", "Safe")) for p in predictions]
     latencies = [{"ms": p.get("latency_ms", 0.0), "tokens": p.get("tokens", 0)} for p in predictions]
     binary = compute_binary_metrics(preds, labels).as_dict()
@@ -74,7 +77,7 @@ def run_one_baseline(
             _write_json_atomic(checkpoint_path, predictions)
         if len(predictions) >= len(rows):
             log.info(f"[{baseline.name}] checkpoint 已完成: {checkpoint_path} ({len(predictions)} 条)，跳过推理")
-            return _report_from_predictions(baseline.name, predictions)
+            return _report_from_predictions(baseline.name, predictions, threshold)
         log.info(f"[{baseline.name}] 从 checkpoint 恢复: 已完成 {len(predictions)}/{len(rows)} 条")
 
     start = len(predictions)
@@ -100,10 +103,10 @@ def run_one_baseline(
             predictions.append(_prediction_record(r, pred))
             if checkpoint_path:
                 _write_json_atomic(checkpoint_path, predictions)
-    return _report_from_predictions(baseline.name, predictions)
+    return _report_from_predictions(baseline.name, predictions, threshold)
 
 
-def _collect_completed_reports(out_dir: Path, names: list[str], expected_count: int) -> list[dict]:
+def _collect_completed_reports(out_dir: Path, names: list[str], expected_count: int, threshold: float) -> list[dict]:
     reports: list[dict] = []
     for name in names:
         pred_path = out_dir / f"predictions_{name}.json"
@@ -115,7 +118,7 @@ def _collect_completed_reports(out_dir: Path, names: list[str], expected_count: 
         if len(predictions) < expected_count:
             log.info(f"[{name}] checkpoint 未完成: {len(predictions)}/{expected_count} 条，不纳入当前汇总表")
             continue
-        rep = _report_from_predictions(name, predictions)
+        rep = _report_from_predictions(name, predictions, threshold)
         reports.append({
             "baseline": name,
             **rep.binary,
@@ -157,7 +160,7 @@ def run_eval(cfg: ExperimentConfig, baseline_names: Optional[list[str]] = None, 
     if limit:
         rows_for_count = rows_for_count[:limit]
     expected_count = len(rows_for_count)
-    reports: list[dict] = _collect_completed_reports(out_dir, names, expected_count)
+    reports: list[dict] = _collect_completed_reports(out_dir, names, expected_count, eval_cfg.threshold)
     if reports:
         _write_eval_artifacts(out_dir, reports)
     for name in tqdm(names, desc="Baselines", unit="baseline"):
@@ -216,8 +219,8 @@ def _build_baseline(name: str, cfg: ExperimentConfig, batch_size: int = 8) -> Ba
         return ToxicBertBaseline(batch_size=batch_size)
     if name in ("explicit-cot", "sft-no-dpo"):
         return StudentBaseline("sft-no-dpo", cfg.sft.output_dir, cfg.sft, conditional_decoding=False, batch_size=batch_size)
-    if name == "dpo-only":
-        return StudentBaseline("dpo-only", cfg.dpo.output_dir, cfg.sft, conditional_decoding=False, batch_size=batch_size)
+    if name == "threatweaver":
+        return StudentBaseline("threatweaver", cfg.dpo.output_dir, cfg.sft, conditional_decoding=False, batch_size=batch_size)
     if name == "implicit-cot":
         raise NotImplementedError("implicit-cot baseline 已退役（Phase 3 隐式内化改为 future work）")
     if name == "roberta-large":

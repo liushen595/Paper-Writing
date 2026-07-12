@@ -524,6 +524,15 @@
 
 ---
 
+## 2026-07-12 — 主实验语义修正与评估端诊断
+
+- 将误名 `dpo-only` 更正为 `threatweaver`：该 checkpoint 实际由 SFT adapter 继续 DPO 得到，是主实验而非仅 DPO 消融。
+- 修复 Toxic-BERT：`unitary/toxic-bert` 是六输出多标签模型，旧实现错误使用 `softmax[:, 1]` 读取 `severe_toxic`；现按配置定位 `toxic` 头并使用 sigmoid。旧全 Safe 预测归档为无效结果。
+- 统一由评估层按配置阈值从概率重算标签，避免 baseline 内硬编码判决与汇总阈值不一致。
+- 新增严格生成标签诊断：仅接受输出末尾唯一独立的 Threat/Safe，不可解析项记为 invalid。
+- 现有 4,835 条预测的 post-hoc 诊断：SFT 生成端覆盖率 100%，FPR 1.58%，F1 0.624；ThreatWeaver 生成端覆盖率 84.59%，FPR 3.10%，F1 0.505。该结果说明 rationale SFT 存在可用信号，同时 DPO 后格式覆盖和召回下降。
+- 分类头指标与生成端明显冲突。代码审计发现 SFT 分类头训练时池化 teacher-forced completion，推理时只看到 prompt；DPO 更新 LoRA 后不更新分类头。论文将其作为接口失配诊断，不直接宣称 CoT 方法或 DPO 理论本身失败。
+
 ## 2026-07-11 — dtype bug 修复 + GPU/API 分离 + 多线程加速 + TF32
 
 ### 本次代码更改做了什么
