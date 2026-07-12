@@ -1,241 +1,225 @@
-# ThreatWeaver — 隐式犯罪意图识别框架
+# ThreatWeaver
 
-基于 **Qwen3-8B + QLoRA** 的端到端小语言模型，通过 **SFT → DPO → 隐式思维链内化（Stepwise Internalization）** 三阶段训练，识别互联网中不含敏感词的隐式犯罪意图。
+ThreatWeaver 是一个课程研究项目，用于分析互联网文本中的隐式犯罪意图。系统以 DOJ 新闻稿为语义种子，通过 Teacher LLM 合成间接意图、Safe 对照与 rationale，训练 Qwen3-8B QLoRA 学生模型，并使用自动偏好对执行 DPO。
 
-## 目录结构
+当前实验是诊断性负结果：SFT 显示有限任务信号，但 DPO 后的 pooled classifier 接近恒定预测 Threat。代码已知存在 SFT 分类头训练/推理输入错位，以及 DPO 更新 LoRA 但不联合更新分类头的问题。本项目不得用于自动执法、惩罚、账号封禁或个人风险评分。
 
-```
-Paper-Writing/
-├── AGENTS.md                 # AI 代理协作规范（环境约束、编码约定）
-├── README.md                 # 本文件
-├── .env.example              # 环境变量模板（API 配置）
-├── .env                      # 实际环境变量（不入库，用户自行配置）
-├── .gitignore
-│
-├── crawler/                  # DOJ 新闻稿爬虫（独立 Python venv，与 ML conda 环境分离）
-│   ├── config.py             # 爬虫配置（代理、目标 URL）
-│   ├── doj_spider.py         # 爬虫主逻辑
-│   ├── run.py                # 爬虫入口
-│   └── output/               # 爬取结果
-│       └── doj_raw.jsonl     # 全量新闻稿（不再预过滤犯罪/非犯罪）
-│
-├── docs/                     # 项目文档
-│   ├── Plan.md               # 研究计划（含文献溯源、技术方案、评估设计）
-│   ├── Methodology.md        # 论文研究方法论记录
-│   ├── DevelopLog.md         # 开发日志
-│   └── Reference-Paper/      # 参考文献（5 篇）
-│
-├── src/                      # 核心代码
-│   ├── utils/                # 基础工具
-│   │   ├── env.py            # .env 环境变量加载（多 Provider 支持）
-│   │   ├── config.py         # YAML 配置管理（dataclass + YAML 序列化）
-│   │   ├── seed.py           # 全局随机种子
-│   │   └── logging.py        # 统一日志（控制台 + 文件）
-│   │
-│   ├── data/                 # 数据处理流水线
-│   │   ├── llm_client.py     # Teacher LLM 客户端（OpenAI 兼容，支持 GLM/Agnes 等）
-│   │   ├── doj_loader.py     # DOJ 新闻稿加载与案情要素抽取
-│   │   ├── synthesis.py      # Phase 0: 造数（Teacher LLM 改写为隐式意图 + CoT）
-│   │   ├── hard_negatives.py # 硬负样本构造（LLM 增强安全言论）
-│   │   ├── preference.py     # Phase 2: DPO 偏好对生成（LLM-as-Judge + 位置交换一致性）
-│   │   ├── dataset.py        # 数据集类（TrainExample、prompt 模板、tokenization）
-│   │   └── blind_set.py      # 盲测集组装（haystack + needles → test_blind.csv）
-│   │
-│   ├── models/               # 模型定义
-│   │   ├── student.py        # Qwen3-8B + QLoRA + ToXCL 分类头
-│   │   ├── classifier_head.py # RoBERTa Teacher 分类头（蒸馏源）
-│   │   └── judge.py          # 开源微调 Judge（三分类 A/B/tie + S1/S2 一致性）
-│   │
-│   ├── training/             # 训练循环
-│   │   ├── sft_dataset.py    # SFT 数据集（chat template + prompt/assistant 分段 loss）
-│   │   ├── sft.py            # Phase 1: SFT（联合损失 cls+clm，支持断点续训）
-│   │   ├── dpo.py            # Phase 2: DPO（trl.DPOTrainer，支持断点续训）
-│   │   └── implicit_cot.py   # Phase 3: Stepwise Internalization（Removal Smoothing + 优化器重置 + 左移除）
-│   │
-│   └── eval/                 # 评估
-│       ├── metrics.py        # 量化指标（FPR/TPR/F1/混淆矩阵/延迟）
-│       ├── baselines.py      # 6 个评估基线（toxic-bert / qwen-zeroshot / explicit-cot / sft-no-dpo / dpo-only / implicit-cot）
-│       ├── llm_judge.py      # LLM-as-Judge 质量评估（ToXCL Alg.1 + S1/S2 + 偏差监控）
-│       └── run_eval.py       # 评估主入口
-│
-├── configs/                  # 实验配置
-│   └── default.yaml          # 默认配置（含 RTX 4060 / 服务器两套参数注释）
-│
-├── scripts/                  # 运行脚本
-│   ├── run_synthesis.py      # Phase 0: 造数入口
-│   ├── run_hard_negatives.py # 硬负样本组装入口
-│   ├── run_preference.py     # DPO 偏好对生成入口
-│   ├── run_sft.py            # Phase 1: SFT 训练入口
-│   ├── run_dpo.py            # Phase 2: DPO 训练入口
-│   ├── run_implicit_cot.py   # Phase 3: 隐式 CoT 训练入口
-│   ├── run_blind_set.py      # 盲测集组装入口
-│   ├── run_eval.py           # 评估入口
-│   ├── run_judge_eval.py     # LLM-as-Judge 评估入口
-│   └── run_all.sh            # 一键全流程（bash scripts/run_all.sh all）
-│
-├── tests/                    # 单元测试
-│   └── test_logic.py         # 纯逻辑测试（12 个，不依赖 GPU/网络）
-│
-└── data/                     # 数据目录（生成数据不入库）
-    ├── raw/                  # 原始数据引用（crawler/output）
-    ├── synthesized/          # Teacher LLM 合成数据（train.jsonl / test.jsonl / hard_negatives.jsonl）
-    ├── preference/           # DPO 偏好对（dpo_pairs.jsonl）
-    ├── blind/                # 盲测集（test_blind.csv）
-    └── cache/                # 缓存
-```
+## 归档内容
 
-## 环境配置
+代码归档包含：
 
-### 1. Conda 环境
+- Python 源码、脚本、测试与集中配置；
+- `data/raw/doj_raw.jsonl`：9,582 条 DOJ 原始爬取记录；
+- `data/synthesized/`：本次课程实验使用的合成 train/test/hard-negative 数据；
+- `artifacts/provenance.json`：公开工件的 SHA-256、大小、记录数和版本缺口；
+- `requirements.txt`、`Dockerfile` 和 `.env.example`。
+
+代码归档不包含论文源、开发文档、本地 agent 配置、模型 checkpoint、偏好对、WildChat 缓存、blind set、预测结果或图表。复核论文现有数字需要另行提供 checkpoint/result artifact bundle；仅解压代码 ZIP 不能离线重现现有训练结果。
+
+## 环境
+
+### ML 环境
+
+推荐 Linux、Python 3.10、CUDA GPU 和 24GB 显存。所有 Python 包使用 `pip` 安装，不混用 `conda install`：
 
 ```bash
 conda create -n ML python=3.10 -y
 conda activate ML
-conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-conda install -c conda-forge transformers peft trl bitsandbytes accelerate datasets
-conda install -c conda-forge python-dotenv pyyaml requests pytest
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-### 2. API 配置
+完整 SFT、候选生成、DPO 和学生模型评估按 RTX 3090 24GB 配置。小显存设备应先使用 `--limit` smoke test，并降低 batch size。
+
+### 环境变量
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入：
-#   AGNES_API_KEY=sk-xxx
-#   AGNES_BASE_URL=https://apihub.agnes-ai.com/v1
-#   AGNES_MODEL_NAME=agnes-2.0-flash
 ```
 
-### 3. 硬件要求
+按所用阶段配置：
 
-| 场景 | GPU | 说明 |
-|---|---|---|
-| 开发/测试 | RTX 4060 8GB | 仅造数、pytest、小规模验证；训练可能溢出 |
-| 完整训练 | RTX 4090 24GB / A6000 48GB | QLoRA 8B 峰值 14-18GB 显存 |
+- `DOJ_PROXY`：DOJ crawler 代理，当前爬虫默认使用 `http://127.0.0.1:2778`；
+- `HF_TOKEN`：下载 Qwen3/WildChat 时可能需要；
+- `DASHSCOPE_API_KEY`、`ALIYUN_MODEL_NAME`、`DASHSCOPE_BASE_URL`：阿里云兼容 API；
+- 或 `.env.example` 中的 GLM、Agnes、OpenAI-compatible provider 变量；
+- `HF_ENDPOINT=https://hf-mirror.com`：可选 Hugging Face 镜像。
 
-## 训练流程详解
+不要提交 `.env` 或真实密钥。
 
-### Phase 0: 数据合成（Teacher Distillation）
+## 目录与阶段
 
-**输入**：`crawler/output/doj_raw.jsonl`（DOJ 新闻稿全量爬取结果，不再预过滤犯罪/非犯罪）
+```text
+crawler/output/doj_raw.jsonl       crawler 工作输出，不是正式训练输入
+        ↓ scripts.import_doj_raw
+data/raw/doj_raw.jsonl             规范、受跟踪的 Phase 0 输入
+        ↓ scripts.run_synthesis
+data/synthesized/*.jsonl           SFT 与 held-out 合成数据
+        ↓ scripts.run_all --only sft
+checkpoints/sft/                    SFT adapter + classifier head
+        ↓ scripts.generate_candidates
+data/preference/candidates.jsonl
+        ↓ scripts.pre_generate judge
+data/preference/dpo_pairs.jsonl
+        ↓ scripts.run_all --only dpo
+checkpoints/dpo/                    ThreatWeaver SFT→DPO checkpoint
+        ↓ scripts.run_all --only blind eval
+outputs/eval/                       predictions、指标和图
+        ↓ scripts.diagnose_generation
+generation_diagnostics.json         无 API/GPU 的确定性生成标签诊断
+```
 
-**输出**：`data/synthesized/train.jsonl` + `test.jsonl`（80/20 自动划分）
+`scripts.run_all` 只驱动 GPU 主链中的 `haystack / sft / gen_candidates / dpo / blind / eval`。DOJ 爬取、Phase 0 synthesis、API Judge 和生成端诊断必须单独执行。
 
-**流程**：
-1. 加载每条 DOJ 记录，抽取案情要素（title + summary + body + crime_types）。
-2. Teacher LLM（Agnes 2.0 Flash）先判断是否为刑事案件：
-   - **刑事案件**：按语言学特征提示（委婉/迂回/反讽/隐喻/反问）改写为隐式意图言论 + 硬负样本。
-   - **非刑事案件**：生成 Safe 噪声样本（`label="Safe"`，`probability≈0`，无 `hard_negative`）。
-3. 输出字段：`implicit_threat` / `hard_negative` / `thought_process` / `label` / `probability` / `category`。
-4. 按 80/20 随机切分为 train/test，test 不参与任何训练。
+## 从 DOJ 爬取开始复现
+
+### 1. 爬取 DOJ 新闻稿
+
+Crawler 使用独立 Python 环境，依赖见 `crawler/requirements.txt`：
 
 ```bash
-python -m scripts.run_synthesis --provider agnes --overwrite
-# 可选：--limit 50（调试时只处理前 50 条）
+python -m venv crawler
+source crawler/bin/activate
+pip install -r crawler/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+python crawler/run.py
 ```
 
-**预计耗时**：~1231 条 × 10s/条 ≈ 3.5 小时
+Crawler 追加写入 `crawler/output/doj_raw.jsonl`。重新全量爬取前应检查 checkpoint 与重复记录；`--fresh` 不会自动删除已有 JSONL。
 
-### Phase 1: 监督微调（SFT）
-
-**输入**：`data/synthesized/train.jsonl`
-
-**输出**：`checkpoints/sft/`（LoRA adapter + 分类头权重）
-
-**架构创新（ToXCL 风格）**：
-- 基座：`Qwen/Qwen3-8B` + QLoRA（4-bit NF4 + LoRA r=64）
-- 在最后隐藏层之上加 **mean-pool 分类头**（二分类 Threat/Safe）
-- 联合损失：`α·L_cls + β·L_clm`
-  - `L_cls`：pooled hidden state 上的交叉熵
-  - `L_clm`：仅对 `thought_process + label` 段计算 Causal LM Loss
-- 辅助：犯罪类别前缀生成（`[Category: Cyber]`）
-- Conditional Decoding：cls=Safe 时直接输出 `[None]`，cls=Threat 时生成完整推理
+课程归档已经包含规范副本 `data/raw/doj_raw.jsonl`，因此复现实验不必重新访问 DOJ。若重新爬取，使用以下命令导入：
 
 ```bash
-python -m scripts.run_sft
+conda run -n ML python -m scripts.import_doj_raw
 ```
 
-**断点续训**：中断后重新运行，自动从最新 `checkpoint-XXXX` 继续。`num_epochs` 为总轮数。
+当目标文件与源文件不同，工具会拒绝静默覆盖；确认后显式使用 `--overwrite`。导入会逐行验证 JSON，并报告 SHA-256、字节数和记录数。
 
-### Phase 2: 直接偏好优化（DPO）
-
-**输入**：SFT 模型 + `data/synthesized/train.jsonl`（生成候选回复）
-
-**输出**：`checkpoints/dpo/`（DPO 微调后的 LoRA adapter）
-
-**流程**：
-1. 用 SFT 模型对每个 prompt 生成两个候选回复（不同温度采样）。
-2. 用 Teacher LLM 作为 Judge 打分，采用偏差抑制策略：
-   - **位置交换一致性过滤**：A/B 顺序交换调用两次，仅一致才采纳
-   - **参考引导打分**：提供 ground-truth 标签 + 参考推理
-   - **三分类偏好方案**：隐式 > 显式 > 无意图
-3. 使用 `trl.DPOTrainer` 训练，DPO β=0.1
+### 2. Teacher 数据合成
 
 ```bash
-# 先生成偏好对
-python -m scripts.run_preference --judge agnes
-# 再训练
-python -m scripts.run_dpo
+conda run -n ML python -m scripts.run_synthesis \
+  --provider aliyun --model qwen-plus --overwrite \
+  --max-workers 5 --rpm 100
+conda run -n ML python -m scripts.check_dedup
 ```
 
-**预计耗时**：偏好对生成 ~1 小时；DPO 训练 ~1-2 小时
+输出：
 
-### Phase 3: 隐式思维链内化（Stepwise Internalization）
+- `data/synthesized/train.jsonl`
+- `data/synthesized/test.jsonl`
+- `data/synthesized/hard_negatives.jsonl`
 
-**输入**：SFT 模型（显式 CoT）
+Teacher provider/model 应在新的实验 manifest 中显式记录。现有历史数据无法恢复 API provider 的精确服务端 revision。
 
-**输出**：`checkpoints/implicit_cot/`（内化后的模型）
-
-**核心算法（Deng et al. 2024）**：
-从显式 CoT 模型出发，按线性调度逐步移除 `thought_process` 中的 token 并微调：
-```
-s(t) = floor(Δ · t / T)
-```
-- Δ=8（每 epoch 移除 8 个 thought token）
-- **Removal Smoothing**：`s(t)* = s(t) + o, P(o) ∝ exp(-λo), λ=4`（98% 不变，2% 多移除）
-- **优化器重置**：每次新增移除 token 时重置 AdamW 状态
-- **左移除**：从 thought 开头移除（右移除效果显著更差）
-
-全部 thought token 移除后，模型输入文本直接输出 Threat/Safe + 概率，不输出中间推理，推理延迟大幅降低。
+### 3. 准备 WildChat Safe stress set
 
 ```bash
-python -m scripts.run_implicit_cot
+conda run -n ML python -m scripts.prepare_haystack --n 5000
 ```
 
-**预计耗时**：~8-16 小时（20 epoch × 每 epoch 重训）
+数据源为 `allenai/WildChat-nontoxic`。当前流程将其用于 blind-set FPR stress test，不加入 SFT 训练。`nontoxic` 不等同于经人工确认无犯罪意图。
 
-### 评估
+### 4. SFT 与候选生成
 
 ```bash
-# 在盲测集上跑全部对比系统
-python -m scripts.run_eval
-
-# 可选：LLM-as-Judge 质量评估
-python -m scripts.run_judge_eval --predictions outputs/eval/predictions_explicit-cot.json
+conda run -n ML python -m scripts.run_all --from sft --to gen_candidates \
+  --batch-size 8 --gradient-accumulation-steps 2
 ```
 
-**对比系统**：
-1. `toxic-bert`：域外广义毒性参考 baseline
-2. `sft-no-dpo`：未经 DPO 的 SFT 消融
-3. `threatweaver`：SFT→DPO 主方法
+SFT 使用 Qwen3-8B、4-bit NF4 QLoRA 和 pooled classifier。候选生成读取 SFT checkpoint 并写入 `data/preference/candidates.jsonl`。
 
-生成式输出可用 `python -m scripts.diagnose_generation outputs/eval/predictions_sft-no-dpo.json outputs/eval/predictions_threatweaver.json` 做严格末尾标签诊断。该诊断与分类头主指标分开报告。
-
-**量化指标**：FPR / TPR (Recall) / F1 / Precision / Accuracy / 混淆矩阵 / 推理延迟 (ms, Tokens/s)
-
-**质性评估**：LLM-as-Judge S1/S2 一致性、ToXCL 自定义解释评估、偏差监控
-
-### 一键全流程
+### 5. API Judge 构造偏好对
 
 ```bash
-bash scripts/run_all.sh all
-# 或单步执行：bash scripts/run_all.sh synth|hardneg|pref|sft|dpo|implicit|blind|eval
+conda run -n ML python -m scripts.pre_generate judge \
+  --input data/preference/candidates.jsonl \
+  --provider aliyun --max-workers 10
 ```
 
-## 参考文献
+Judge 仅用于训练偏好对构造：同一 A/B pair 交换位置调用两次，只保留胜者语义一致的样本。最终 predictions 不使用 LLM Judge 评分。
 
-1. Wen et al., "Unveiling the Implicit Toxicity in Large Language Models", EMNLP 2023
-2. Hoang et al., "ToXCL: A Unified Framework for Toxic Speech Detection and Explanation", NAACL 2024
-3. Deng et al., "From Explicit CoT to Implicit CoT: Learning to Internalize CoT Step by Step", NeurIPS 2024
-4. Zelikman et al., "Quiet-STaR: Language Models Can Teach Themselves to Think Before Speaking", COLM 2024
-5. Zheng et al., "Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena", NeurIPS 2023
+### 6. DPO、blind set 与正式评估
+
+```bash
+conda run -n ML python -m scripts.run_all --from dpo --to eval \
+  --batch-size 1 --gradient-accumulation-steps 8
+```
+
+默认比较：
+
+- `toxic-bert`：域外 broad-toxicity reference；
+- `sft-no-dpo`：SFT 消融；
+- `threatweaver`：SFT→DPO 主模型。
+
+`--only eval` 只评估已有 checkpoint，不会补跑 SFT 或 DPO。完整同名 prediction JSON 会被复用，因此改变数据或 checkpoint 后应先归档旧预测。
+
+### 7. 无 API 的生成端诊断
+
+```bash
+conda run -n ML python -m scripts.diagnose_generation \
+  outputs/eval/predictions_sft-no-dpo.json \
+  outputs/eval/predictions_threatweaver.json \
+  --output outputs/eval/generation_diagnostics.json
+```
+
+解析器只接受输出末尾唯一、独立的 `Threat` 或 `Safe`；其他输出记为 invalid，不做 LLM fallback。
+
+## Smoke Test
+
+```bash
+conda run -n ML python -m pytest -q
+conda run -n ML python -m scripts.run_synthesis --help
+conda run -n ML python -m scripts.run_all --help
+conda run -n ML python -m scripts.run_eval --help
+conda run -n ML python -m scripts.diagnose_generation --help
+
+# 有 API/GPU 时：
+conda run -n ML python -m scripts.run_synthesis --provider aliyun --limit 20 --overwrite
+conda run -n ML python -m scripts.run_all --from sft --to eval --limit 20 --batch-size 1
+```
+
+Smoke test 会写正式默认路径，运行前应备份已有 checkpoint、prediction 和数据文件。
+
+## Provenance
+
+生成公开工件 manifest：
+
+```bash
+conda run -n ML python -m scripts.build_provenance
+```
+
+默认记录配置、依赖、规范 DOJ raw 和受跟踪的合成数据。可追加本地但不分发的工件：
+
+```bash
+conda run -n ML python -m scripts.build_provenance \
+  --output artifacts/provenance-local.json \
+  --artifact checkpoints/sft/adapter_model.safetensors:sft_adapter:not_distributed \
+  --artifact checkpoints/sft/classifier_head.pt:sft_classifier:not_distributed \
+  --artifact checkpoints/dpo/adapter_model.safetensors:dpo_adapter:not_distributed \
+  --artifact outputs/eval/predictions_threatweaver.json:predictions:not_distributed
+```
+
+现有 checkpoint 仅记录 `Qwen/Qwen3-8B` repo ID，没有保存当时解析到的 Hugging Face commit；Teacher/Judge 的精确服务端 revision 也未记录。因此 manifest 支持工件一致性核验，但不构成原实验的 bitwise reproducibility 证明。
+
+## 已知限制
+
+- SFT 分类头训练时池化 teacher-forced completion，推理时只看到 prompt；
+- DPO 更新语言模型 LoRA，但不联合更新 pooled classifier；
+- 生成标签指标是观察到端点分歧后的 post-hoc diagnostic；
+- blind set 主要是 Teacher 合成数据，缺少独立人工 gold benchmark；
+- 仅有单一基座、单 seed 和单次主要训练；
+- Toxic-BERT 测量 broad toxicity，不是同任务犯罪意图模型；
+- rationale 是生成输出，不证明内部推理忠实。
+
+## 发布归档
+
+发布前先审计 Git 跟踪清单，再创建 ZIP：
+
+```bash
+git ls-files > ../archive-manifest.txt
+zip ../threatweaver-code.zip -@ < ../archive-manifest.txt
+unzip -l ../threatweaver-code.zip
+zipinfo -t ../threatweaver-code.zip
+sha256sum ../threatweaver-code.zip
+```
+
+归档不得包含 `.env`、论文与开发文档、本地 agent 配置、checkpoint、outputs、logs 或缓存。最终应在全新目录解压并运行单元测试与 CLI `--help`。

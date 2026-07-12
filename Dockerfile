@@ -1,7 +1,7 @@
 # 犯罪意图识别框架 — ML 训练环境镜像
 #
 # 设计目标：在任意租来的 GPU 服务器上完美复刻本地 ML 环境
-# 基础镜像：CUDA 12.4.1 + cuDNN 9（匹配 torch 2.5.1+cu124 自带的 CUDA 运行时）
+# 基础镜像：CUDA 12.4.1 + cuDNN 9（匹配 requirements.txt 的 torch 2.6.0 CUDA 12.4 依赖）
 #
 # 用法：
 #   docker build -t paper-ml:latest .

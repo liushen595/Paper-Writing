@@ -153,3 +153,28 @@ def test_config_roundtrip(tmp_path: Path):
     assert cfg2.sft.base_model == cfg.sft.base_model
     assert cfg2.dpo.beta == cfg.dpo.beta
     assert cfg2.implicit_cot.delta_per_epoch == cfg.implicit_cot.delta_per_epoch
+
+
+def test_import_doj_raw(tmp_path: Path):
+    from scripts.import_doj_raw import import_doj_raw, inspect_jsonl
+
+    source = tmp_path / "source.jsonl"
+    destination = tmp_path / "raw" / "doj_raw.jsonl"
+    source.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
+    info = import_doj_raw(source, destination)
+    assert info == inspect_jsonl(destination)
+    assert info["records"] == 2
+    destination.write_text('{"different": true}\n', encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        import_doj_raw(source, destination)
+
+
+def test_provenance_artifact_entry(tmp_path: Path):
+    from scripts.build_provenance import artifact_entry, hash_file
+
+    path = tmp_path / "records.jsonl"
+    path.write_text('{"id": 1}\n{"id": 2}\n', encoding="utf-8")
+    entry = artifact_entry(path, "test_data", distributed=False)
+    assert entry["sha256"] == hash_file(path)
+    assert entry["records"] == 2
+    assert entry["distribution"] == "not_distributed"

@@ -3,7 +3,7 @@ seed: 42
 use_hf_mirror: false
 
 data:
-  raw_doj: "crawler/output/doj_raw.jsonl"
+  raw_doj: "data/raw/doj_raw.jsonl"
   synthesized_dir: "data/synthesized"
   preference_dir: "data/preference"
   blind_dir: "data/blind"

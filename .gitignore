@@ -36,10 +36,11 @@ venv/
 env/
 
 # ====================================================================
-# opencode 工具自身依赖（node_modules 不入库；保留 skills 配置）
+# 本地 agent / 编辑器配置（不进入代码归档）
 # ====================================================================
-.opencode/node_modules/
-.opencode/package-lock.json
+/.opencode/
+/AGENTS.md
+/CLAUDE.local.md
 
 # 其他 IDE/工具配置
 .claude/
@@ -47,7 +48,7 @@ env/
 .github/
 
 # ====================================================================
-# 数据（源数据 crawler/output/*.jsonl 保留入库；生成数据入仓共享，备份排除）
+# 数据（规范原始输入位于 data/raw；crawler output 不入归档）
 # ====================================================================
 crawler/output/
 data/synthesized/*.bak
@@ -94,4 +95,8 @@ Thumbs.db
 # 其他
 # ====================================================================
 tmp_docs/
-paper/
+/docs/
+/paper/
+/archive-manifest.txt
+/*.zip
+/zellij

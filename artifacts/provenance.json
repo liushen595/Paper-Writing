@@ -1,0 +1,86 @@
+{
+  "artifacts": [
+    {
+      "bytes": 2172,
+      "distribution": "included",
+      "path": "configs/default.yaml",
+      "records": null,
+      "role": "experiment_config",
+      "sha256": "dff337eec259e927c8673628e72b64aa3eeba446435c15a2ff6d7f726f8f65d7"
+    },
+    {
+      "bytes": 2024,
+      "distribution": "included",
+      "path": "requirements.txt",
+      "records": null,
+      "role": "dependency_lock",
+      "sha256": "fd1f7653da5c59bb6fafcb973268db4c8f606273f517a8f76cfead17b9555805"
+    },
+    {
+      "bytes": 46599017,
+      "distribution": "included",
+      "path": "data/raw/doj_raw.jsonl",
+      "records": 9582,
+      "role": "raw_doj_input",
+      "sha256": "99e125fc6c4c9fa3d61f91e629941b29be658de3cf8f645893e3e8f5cf8627fb"
+    },
+    {
+      "bytes": 7471539,
+      "distribution": "included",
+      "path": "data/synthesized/train.jsonl",
+      "records": 7446,
+      "role": "sft_train",
+      "sha256": "623b6e78b1d82ed14fa1261a1f0cf9b18359c4a6e7e8639fdd2689daa6bda1b6"
+    },
+    {
+      "bytes": 1940601,
+      "distribution": "included",
+      "path": "data/synthesized/test.jsonl",
+      "records": 1935,
+      "role": "held_out_synthetic",
+      "sha256": "dced8df8499b5ff0f0b31c837bba592be59b9603973ea8bcd594956c4c369fba"
+    },
+    {
+      "bytes": 2069501,
+      "distribution": "included",
+      "path": "data/synthesized/hard_negatives.jsonl",
+      "records": 4622,
+      "role": "hard_negatives",
+      "sha256": "b06a6eae320fec61817fb285c4bca4f4b9fcda0f9bd817ba32ef454afa2d3870"
+    }
+  ],
+  "created_at_utc": "2026-07-12T02:34:35.396436+00:00",
+  "external_resources": [
+    {
+      "repo_id": "Qwen/Qwen3-8B",
+      "resolved_revision": null,
+      "revision_status": "not_recorded_for_existing_run",
+      "role": "student_base"
+    },
+    {
+      "repo_id": "allenai/WildChat-nontoxic",
+      "resolved_revision": null,
+      "revision_status": "not_recorded_for_existing_run",
+      "role": "safe_stress_dataset"
+    },
+    {
+      "model": "not_recorded",
+      "provider": "unknown",
+      "role": "teacher"
+    },
+    {
+      "model": "not_recorded",
+      "provider": "unknown",
+      "role": "preference_judge"
+    }
+  ],
+  "git": {
+    "commit": "95b3efea7d97d54c6f98037c5a6db7ff2b62b5d5",
+    "dirty": true
+  },
+  "runtime": {
+    "platform": "Linux-6.18.33.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.10.20"
+  },
+  "schema_version": 1
+}

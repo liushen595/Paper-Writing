@@ -13,7 +13,7 @@ from .env import PROJECT_ROOT
 
 @dataclass
 class DataConfig:
-    raw_doj: str = "crawler/output/doj_raw.jsonl"
+    raw_doj: str = "data/raw/doj_raw.jsonl"
     synthesized_dir: str = "data/synthesized"
     preference_dir: str = "data/preference"
     blind_dir: str = "data/blind"

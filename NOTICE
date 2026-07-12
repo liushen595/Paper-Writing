@@ -1,0 +1,12 @@
+This project includes the following third-party components:
+
+1. WildChat-nontoxic Dataset
+   Copyright AI2
+   Licensed under the AI2 ImpACT License - Low Risk Artifacts ("LR Agreement")
+   https://allenai.org/data/wildchat
+
+2. Model Weights
+   Licensed under the Apache License, Version 2.0
+
+3. Scrapling Crawler
+   Licensed under the BSD 3-Clause License
